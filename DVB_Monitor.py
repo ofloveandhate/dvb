@@ -6,6 +6,7 @@ from PyQt5.QtCore import Qt
 import dvb
 from datetime import datetime, timezone
 
+import numpy as np
 
 occupancy_emoji = {
     'StandingOnly': '🕴️',
@@ -19,6 +20,11 @@ mode_emoji = {
     'PlusBus': '🚎'
 }
 
+
+display = {
+    'PiTFT Plus': [0, 0, 480, 320]
+
+}
 def get_line_w_mode(departure):
     try:
         e = mode_emoji[departure.mode]
@@ -35,7 +41,13 @@ def time_to_depart(departure):
     problem: if the real_time is none, then this may fail.  so use a try/except around this.
     """
 
-    minutes = (departure.real_time - datetime.now(timezone.utc)).total_seconds() // 60 + 1 # adding +1 to make match the iphone app
+    if departure.real_time:
+        minutes = (departure.real_time - datetime.now(timezone.utc)).total_seconds() // 60 + 1 
+        # adding +1 to make match the iphone app
+    else:
+        return np.inf
+
+    
     return minutes
 
 
@@ -45,10 +57,7 @@ class App(QMainWindow):
         super().__init__()
 
         self.title = "DVB Local Stop Monitor"
-        self.left = 10
-        self.top = 10
-        self.width = 500
-        self.height = 300
+        self.left = self.right = self.width = self.height = None
 
         self.num_departures_to_monitor = 12
 
@@ -67,7 +76,7 @@ class App(QMainWindow):
         self.time_updated_widget = None
 
 
-
+        
 
         
 
@@ -87,7 +96,15 @@ class App(QMainWindow):
 
         self.initUI()
         
+    def setup_window_size(self):
 
+        # get from the dict at the top
+        params = display['PiTFT Plus']
+
+        self.left   = params[0]
+        self.top    = params[1]
+        self.width  = params[2]
+        self.height = params[3]
 
     def init_tables(self):
         
@@ -161,6 +178,9 @@ class App(QMainWindow):
 
 
     def initUI(self):
+
+        self.setup_window_size()
+
         self.setWindowTitle(self.title)
         self.setGeometry(self.left, self.top, self.width, self.height)
         
