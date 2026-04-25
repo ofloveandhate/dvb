@@ -1,5 +1,5 @@
 import sys
-from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QHBoxLayout, QGroupBox, QDialog, QVBoxLayout, QGridLayout, QMainWindow, QTableWidget, QTableWidgetItem
+from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QHBoxLayout, QGroupBox, QDialog, QVBoxLayout, QGridLayout, QMainWindow, QTableWidget, QTableWidgetItem, QPushButton
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import pyqtSlot, QTimer
 from PyQt5.QtCore import Qt
@@ -25,6 +25,9 @@ display = {
     'PiTFT Plus': [0, 0, 480, 320] #https://www.adafruit.com/product/2441
 
 }
+
+
+
 def get_line_w_mode(departure):
     try:
         e = mode_emoji[departure.mode]
@@ -69,16 +72,18 @@ class App(QMainWindow):
         self.main_layout = None # will hold all the other layouts
 
         self.tables_layout = None # holds the layouts per haltestelle
-
+        self.buttons = None
         self.layout_per_haltestelle = None
         self.header_widgets = None
 
         self.time_updated_widget = None
 
-
-
+        self.css = {}
+        with open("table.css",'r') as f:
+            self.css['table'] = f.read()
 
         
+
 
 
         self.num_rows_per_table = 6
@@ -87,13 +92,19 @@ class App(QMainWindow):
         self.num_cols_needed = self.num_departures_to_monitor // self.num_rows_per_table
 
         self.stops_to_monitor = [
-                                '33000003', #pragerstr
-                                'Albertplatz'
+                                'Pirnaischerplatz',
+                                'Pragerstr', #pragerstr
+                                'Altmarkt',                              
+                                # 'Albertplatz',
+                                # 'Bautzner Straße/Rothenberger Straße'
                                 ]
 
+        self.current_page = 0
+        self.num_stops_per_page = 1
+
+        self.num_pages_needed = len(self.stops_to_monitor) // self.num_stops_per_page
 
         self.client = dvb.Client(user_agent="dvb_testing/2026.04.25 silviana amethyst (amethyst@mpi-cbg.de)")
-
         self.initUI()
         
     def setup_window_size(self):
@@ -118,29 +129,31 @@ class App(QMainWindow):
         self.layout_per_haltestelle = {}
         self.header_widgets = {}
 
-        for s in self.stops_to_monitor:
+        for ii in range(self.num_stops_per_page):
 
-            self.layout_per_haltestelle[s] = QVBoxLayout() # make and store
-            this_layout = self.layout_per_haltestelle[s] # unpack
+            self.layout_per_haltestelle[ii] = QVBoxLayout() # make and store
+            this_layout = self.layout_per_haltestelle[ii] # unpack
 
-            self.setup_table(s)
+            self.setup_table(ii)
 
-            self.header_widgets[s] = QLabel(s)
-            w = self.header_widgets[s]
+            self.header_widgets[ii] = QLabel()
+            w = self.header_widgets[ii]
             w.setProperty('class', 'haltestelle_header')
             w.setAlignment(Qt.AlignCenter)
 
             this_layout.addWidget(w)
-            this_layout.addWidget(self.tables[s])
+            this_layout.addWidget(self.tables[ii])
 
             self.tables_layout.addLayout(this_layout)
 
         self.main_layout.addLayout(self.tables_layout)
 
-    def setup_table(self, title):
 
-        self.tables[title] = QTableWidget() # make and assign into dict
-        table = self.tables[title] # get a reference
+
+    def setup_table(self, ii):
+
+        self.tables[ii] = QTableWidget() # make and assign into dict
+        table = self.tables[ii] # get a reference
 
         table.setRowCount(self.num_rows_per_table)
         table.setColumnCount(self.num_cols_per_col * self.num_cols_needed)
@@ -154,6 +167,8 @@ class App(QMainWindow):
 
         # Hide row labels (vertical header)
         table.verticalHeader().setVisible(False)
+
+        table.setStyleSheet(self.css['table'])
 
         return table
         # Set table properties
@@ -174,10 +189,37 @@ class App(QMainWindow):
 
         w = self.time_updated_widget
         w.setProperty('class', 'footer')
-        w.setAlignment(Qt.AlignRight)
+        w.setAlignment(Qt.AlignCenter)
 
         self.main_layout.addWidget(self.time_updated_widget)  # Add text widget here
 
+    def setup_bottom(self):
+        self.buttons = {}
+
+        self.bottom_layout = QHBoxLayout()
+
+        self.setup_timeupdated()
+
+        
+        self.buttons['prev'] = QPushButton()
+        self.buttons['prev'].clicked.connect(lambda x: self.change_page(-1))
+
+        self.buttons['next'] = QPushButton()
+        self.buttons['next'].clicked.connect(lambda x: self.change_page(+1))
+
+        self.buttons['refresh'] = QPushButton("🥀")
+        self.buttons['refresh'].clicked.connect(self.rebuild)
+
+        self.bottom_layout.addWidget(self.buttons['prev'])
+        self.bottom_layout.addWidget(self.buttons['refresh'])
+        self.bottom_layout.addWidget(self.buttons['next'])
+
+        self.main_layout.addLayout(self.bottom_layout)
+
+    def change_page(self, increment):
+        self.current_page = (increment + self.current_page + self.num_pages_needed) % self.num_pages_needed
+        
+        self.rebuild()
 
     def initUI(self):
 
@@ -196,7 +238,7 @@ class App(QMainWindow):
         
 
         self.init_tables()
-        self.setup_timeupdated()
+        self.setup_bottom()
         
 
 
@@ -211,26 +253,39 @@ class App(QMainWindow):
 
     def rebuild(self):
 
-        for s in self.stops_to_monitor:
-            self.repop_table(s)
+        for table_ind in range(self.num_stops_per_page):
+            stop_ind = self.current_page*self.num_stops_per_page + table_ind
+
+            self.repop_table(stop_ind)
         
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.time_updated_widget.setText(timestamp)
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.time_updated_widget.setText(timestamp)
+
+        self.buttons['prev'].setText(self.stops_to_monitor[(self.current_page*self.num_stops_per_page-1) % len(self.stops_to_monitor)])
+        self.buttons['next'].setText(self.stops_to_monitor[(self.current_page*self.num_stops_per_page+self.num_stops_per_page) % len(self.stops_to_monitor)])
 
         self.update()
         
-    def repop_table(self, stop_name):
+    def repop_table(self, stop_ind):
+
+        table_ind = stop_ind % self.num_stops_per_page
 
         # unpack to make shorter
-        table = self.tables[stop_name]
+        table = self.tables[table_ind]
 
         self.set_column_labels(table)
 
+        stop_name = self.stops_to_monitor[stop_ind]
+
+        w = self.header_widgets[table_ind]
+        w.setText(stop_name)
 
         if not self.never_update or stop_name not in self.departures:
             print(f'getting departures for {stop_name}')
             self.departures[stop_name] = self.client.monitor(stop=stop_name,limit=self.num_departures_to_monitor)
-
+        else:
+            print(f'mock getting departures for {stop_name}')
 
         # unpack
         departures = self.departures[stop_name]
