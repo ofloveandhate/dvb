@@ -71,7 +71,7 @@ class App(QMainWindow):
 
         self.main_layout = None # will hold all the other layouts
 
-        self.tables_layout = None # holds the layouts per haltestelle
+        self.tables_layout = None # holds the layouts per table on page.
         self.buttons = None
         self.layout_per_haltestelle = None
         self.header_widgets = None
