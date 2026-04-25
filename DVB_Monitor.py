@@ -228,12 +228,15 @@ class App(QMainWindow):
         self.setWindowTitle(self.title)
         self.setGeometry(self.left, self.top, self.width, self.height)
         
+
+
         # Create central widget and layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
 
         self.main_layout = QVBoxLayout(central_widget)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)  # This removes padding around the layout
         self.setLayout(self.main_layout)
         
 
@@ -412,7 +415,9 @@ if __name__ == '__main__':
     '''
     QGroupBox{background-color: black;}
     QLabel.header{font-size: 27pt; color: white; background-color: blue;}
-    QLabel.title{font-size: 30pt; color: white;}
+    QLabel.title{font-size: 24pt; color: white;}
+    QLabel.haltestelle_header{font-size: 18pt; color: white;}
+
     QLabel.body{font-size: 23pt; color: white;}
     QLabel.footer{font-size: 8pt; color: white;}
     ''')
