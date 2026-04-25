@@ -1,10 +1,11 @@
 import sys
-from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QHBoxLayout, QGroupBox, QDialog, QVBoxLayout, QGridLayout, QMainWindow, QTableWidget, QTableWidgetItem, QPushButton
-from PyQt5.QtGui import QIcon
+from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QHBoxLayout, QGroupBox, QDialog, QVBoxLayout, QGridLayout, QMainWindow, QTableWidget, QTableWidgetItem, QPushButton, QHeaderView, QShortcut
+from PyQt5.QtGui import QIcon, QKeySequence
 from PyQt5.QtCore import pyqtSlot, QTimer
 from PyQt5.QtCore import Qt
 import dvb
 from datetime import datetime, timezone
+
 
 import numpy as np
 
@@ -253,6 +254,9 @@ class App(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
+
+        self.escape_shortcut = QShortcut(QKeySequence("Escape"), self)
+        self.escape_shortcut.activated.connect(QApplication.quit)
 
         self.main_layout = QVBoxLayout(central_widget)
         self.main_layout.setContentsMargins(0, 0, 0, 0)  # This removes padding around the layout
