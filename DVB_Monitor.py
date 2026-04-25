@@ -22,7 +22,7 @@ mode_emoji = {
 
 
 display = {
-    'PiTFT Plus': [0, 0, 480, 320]
+    'PiTFT Plus': [0, 0, 480, 320] #https://www.adafruit.com/product/2441
 
 }
 def get_line_w_mode(departure):
@@ -76,7 +76,7 @@ class App(QMainWindow):
         self.time_updated_widget = None
 
 
-        
+
 
         
 
@@ -112,20 +112,18 @@ class App(QMainWindow):
         self.tables_layout = QHBoxLayout()
 
         # make the tables 
-        self.tables = {s:QTableWidget() for s in self.stops_to_monitor}
+        self.tables = {}
 
         # m
         self.layout_per_haltestelle = {}
         self.header_widgets = {}
 
-        for s,t in self.tables.items():
+        for s in self.stops_to_monitor:
 
-            self.setup_table(t, s)
+            self.layout_per_haltestelle[s] = QVBoxLayout() # make and store
+            this_layout = self.layout_per_haltestelle[s] # unpack
 
-            self.layout_per_haltestelle[s] = QVBoxLayout()
-
-            # unpack
-            this_layout = self.layout_per_haltestelle[s]
+            self.setup_table(s)
 
             self.header_widgets[s] = QLabel(s)
             w = self.header_widgets[s]
@@ -139,7 +137,10 @@ class App(QMainWindow):
 
         self.main_layout.addLayout(self.tables_layout)
 
-    def setup_table(self, table, title):
+    def setup_table(self, title):
+
+        self.tables[title] = QTableWidget() # make and assign into dict
+        table = self.tables[title] # get a reference
 
         table.setRowCount(self.num_rows_per_table)
         table.setColumnCount(self.num_cols_per_col * self.num_cols_needed)
@@ -154,6 +155,7 @@ class App(QMainWindow):
         # Hide row labels (vertical header)
         table.verticalHeader().setVisible(False)
 
+        return table
         # Set table properties
         # table.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
 
