@@ -85,7 +85,7 @@ class App(QMainWindow):
         
 
 
-
+        self.row_height = 30
         self.num_rows_per_table = 6
         self.num_cols_per_col = 3  # because each departure gets this many, and we use multiple cols of departures
 
@@ -159,6 +159,9 @@ class App(QMainWindow):
         table.setColumnCount(self.num_cols_per_col * self.num_cols_needed)
 
 
+        for jj in range(self.num_rows_per_table):
+            table.setRowHeight(jj, self.row_height) # magic constant
+
         self.set_column_labels(table)
 
 
@@ -170,19 +173,35 @@ class App(QMainWindow):
 
         table.setStyleSheet(self.css['table'])
 
+        table.horizontalHeader().setStretchLastSection(False)
+        table.verticalHeader().setStretchLastSection(False)
+
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
+
+        
+
         return table
         # Set table properties
         # table.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
 
     def set_column_labels(self,table):
+
+        
         for ii in range(self.num_cols_needed):
+
             table.setHorizontalHeaderItem(0+ii*3, QTableWidgetItem(f"#"))
-            table.setColumnWidth(0+ii*3, 50)
+            table.setColumnWidth(0+ii*3, 70)
             table.setHorizontalHeaderItem(1+ii*3, QTableWidgetItem(f"Dest"))
             table.setColumnWidth(1+ii*3, 120)
             table.setHorizontalHeaderItem(2+ii*3, QTableWidgetItem(f"Mins"))
             table.setColumnWidth(2+ii*3, 40)
 
+
+        width = sum( table.columnWidth(col) for col in range(table.columnCount()))
+            
+
+        table.setFixedSize(width + 20, self.row_height * (self.num_rows_per_table+1))
 
     def setup_timeupdated(self):
         self.time_updated_widget = QLabel()
@@ -422,10 +441,7 @@ if __name__ == '__main__':
     QLabel.footer{font-size: 8pt; color: white;}
     ''')
 
-    #app.setStyleSheet("background-color: blue")
+
     ex = App()
     sys.exit(app.exec_())
     
-#while True:
-#    print('hello')
-#    time.sleep(60)
