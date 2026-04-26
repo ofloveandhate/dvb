@@ -7,7 +7,9 @@ import dvb
 from datetime import datetime, timezone
 
 
-import numpy as np
+from collections import namedtuple
+
+import numpy as np # for infinity
 
 occupancy_emoji = {
     'StandingOnly': '🕴️',
@@ -28,17 +30,30 @@ display = {
 }
 
 
+Column = namedtuple("Column", ["header","width","getter", "alignment"])
 
-def get_line_w_mode(departure):
+def get_line(departure):
+    return departure.line
+
+def get_mode_emoji(departure):
     try:
         e = mode_emoji[departure.mode]
     except Exception as e:
         print(f'unfound emoji for mode {departure.mode}')
 
-    return f'{departure.line} {e}'
+    return e
+
+def get_line_w_mode(departure):
+    line = get_line(departure)
+    e = get_mode_emoji(departure)
+
+    return f'{line} {e}'
     
 
-def time_to_depart(departure):
+def get_destination(departure):
+    return departure.direction
+
+def get_minutes(departure):
     """
     compute the number of minutes, rounded down via integer arithmetic, to departure.
 
@@ -46,7 +61,7 @@ def time_to_depart(departure):
     """
 
     if departure.real_time:
-        minutes = (departure.real_time - datetime.now(timezone.utc)).total_seconds() // 60 + 1 
+        minutes = int((departure.real_time - datetime.now(timezone.utc)).total_seconds() // 60 + 1 )
         # adding +1 to make match the iphone app
     else:
         return np.inf
@@ -78,6 +93,8 @@ class App(QMainWindow):
         self.num_rows_per_table = 6  # make additional columns in table when the number of departures to monitor is greater than this number
         self.num_stops_per_page = 1  #
 
+        self.stop_refreshing_after = 600 # seconds
+        self.refresh_interval      = 120 # seconds
 
         self.css = {}
         with open("table.css",'r') as f:
@@ -99,13 +116,18 @@ class App(QMainWindow):
 
         
 
+        self.columns = [
+                        Column('#'   ,30,get_line,         Qt.AlignHCenter | Qt.AlignBottom),
+                        Column(''    ,30,get_mode_emoji,   Qt.AlignLeft | Qt.AlignBottom),
+                        Column('Mins',30,get_minutes,      Qt.AlignRight | Qt.AlignBottom),
+                        Column('Dest',140,get_destination, Qt.AlignLeft | Qt.AlignBottom),
+                        
+                        ]
 
         
 
 
-        # an internal config, that has to correspond with the functions below.  i know how to make functional, 
-        # but it's a bit complicated, so i haven't done it yet.
-        self.num_cols_per_col = 3  # because each departure gets this many, and we use multiple cols of departures
+
 
 
         # holds some state through the loop
@@ -114,6 +136,9 @@ class App(QMainWindow):
         self.departures        = {} # holds the departures, per-stop.
 
         # some helper variables so don't need to keep recomputing them
+
+        self.num_cols_per_col = len(self.columns)  # because each departure gets this many, and we use multiple cols of departures
+
         self.num_cols_needed = self.num_departures_to_monitor // self.num_rows_per_table
         self.is_nav_needed = len(self.stops_to_monitor) > self.num_stops_per_page
         self.is_nav_needed_prev = len(self.stops_to_monitor) > self.num_stops_per_page
@@ -175,6 +200,7 @@ class App(QMainWindow):
         table.setRowCount(self.num_rows_per_table)
         table.setColumnCount(self.num_cols_per_col * self.num_cols_needed)
 
+        
 
         for jj in range(self.num_rows_per_table):
             table.setRowHeight(jj, self.row_height) # magic constant
@@ -204,21 +230,31 @@ class App(QMainWindow):
 
     def set_column_labels(self,table):
 
-        
+        col_ind = 0
         for ii in range(self.num_cols_needed):
+            for col in self.columns:
 
-            table.setHorizontalHeaderItem(0+ii*3, QTableWidgetItem(f"#"))
-            table.setColumnWidth(0+ii*3, 70)
-            table.setHorizontalHeaderItem(1+ii*3, QTableWidgetItem(f"Dest"))
-            table.setColumnWidth(1+ii*3, 120)
-            table.setHorizontalHeaderItem(2+ii*3, QTableWidgetItem(f"Mins"))
-            table.setColumnWidth(2+ii*3, 40)
+                
+                table.setHorizontalHeaderItem(col_ind, QTableWidgetItem(col.header))
+                table.setColumnWidth(col_ind, col.width)
+
+                
+                for r in range(self.num_rows_per_table):
+
+                    table.setItem(r, col_ind, QTableWidgetItem(  ))
+
+                    item = table.item(r, col_ind)
+
+                    item.setText('?')
+                    item.setTextAlignment(col.alignment)
 
 
-        width = sum( table.columnWidth(col) for col in range(table.columnCount()))
+                col_ind += 1
+
+        total_width = sum( table.columnWidth(col) for col in range(table.columnCount()))
             
 
-        table.setFixedSize(width + 20, self.row_height * (self.num_rows_per_table+1))
+        table.setFixedSize(total_width + 20, self.row_height * (self.num_rows_per_table+1))
 
     def setup_timeupdated(self):
         self.time_updated_widget = QLabel()
@@ -312,7 +348,7 @@ class App(QMainWindow):
         for table_ind in range(self.num_stops_per_page):
             stop_ind = self.current_page*self.num_stops_per_page + table_ind
 
-            self.repop_table(stop_ind)
+            self.refresh_table(stop_ind)
 
     def _rebuild_time(self):
         self.time_last_updated = datetime.now()
@@ -326,7 +362,7 @@ class App(QMainWindow):
         if self.is_nav_needed_next:
             self.buttons['next'].setText(self.stops_to_monitor[(self.current_page*self.num_stops_per_page+self.num_stops_per_page) % len(self.stops_to_monitor)])
 
-    def repop_table(self, stop_ind):
+    def refresh_table(self, stop_ind):
 
         if stop_ind >= len(self.stops_to_monitor):
             return
@@ -335,8 +371,6 @@ class App(QMainWindow):
 
         # unpack to make shorter
         table = self.tables[table_ind]
-
-        self.set_column_labels(table)
 
         stop_name = self.stops_to_monitor[stop_ind]
 
@@ -353,120 +387,22 @@ class App(QMainWindow):
         departures = self.departures[stop_name]
 
         # sort the list of departures
-        departures.sort(key = time_to_depart)
+        departures.sort(key = get_minutes)
 
         # now we set the data in the tables from the departure list
-
         for ii,departure in enumerate(departures[:self.num_departures_to_monitor]):
 
-
             row = ii%self.num_rows_per_table
-
-            
             col = ii//self.num_rows_per_table * self.num_cols_per_col
-            table.setItem(row, col+0, QTableWidgetItem(get_line_w_mode(departure)))
-            table.setItem(row, col+1, QTableWidgetItem(departure.direction))
-            try:
-                minutes = time_to_depart(departure)
-                mins_text = f'{minutes:0.0f}'
 
-            except Exception as e:
-                mins_text = f'{departure.state}'
+            for shift,c in enumerate(self.columns):
+                val = c.getter(departure) # get the value using the getter function
 
-            table.setItem(row, col+2, QTableWidgetItem(mins_text))
-    
+                item = table.item(row, col+shift) # get the item from the table.  assumes it was created above in the init routines.
 
-        
-    # def createLargeGridLayout(self):
-    #     self.horizontalGroupBox = QWidget()
-    #     layout = QGridLayout()
-        
+                #finally, set the value.
+                item.setText(f'{val}')
 
-    #     left = self.createStopWidget(self.stops_to_monitor[0], 10)
-    #     right = self.createStopWidget(self.stops_to_monitor[1], 10)#Bautzner Straße/Rothenberger Straße
-
-    #     bottom = self.createFooter()
-    #     layout.addWidget(left,0,0)
-    #     layout.addWidget(right,0,1)
-    #     layout.addWidget(bottom,1,1)
-        
-    #     self.horizontalGroupBox.setLayout(layout)
-
-    # def createStopWidget(self, stop_name, num_results):
-    #     box = QGroupBox()
-    #     layout = QVBoxLayout()
-    #     layout.addWidget(self.createLabel(stop_name, 'title'))
-        
-    #     layout.addWidget(self.createDepartureHeader())
-        
-    #     if not self.never_update:
-    #         print(f'getting departures for {stop_name}')
-    #     self.departures[stop_name] = self.client.monitor(stop=stop_name,limit=4)
-
-
-
-    #     departures = self.departures[stop_name]
-
-    #     departures.sort(key = time_to_depart)
-
-    #     for departure in departures:
-    #         print(departure)
-    #         # if departure['arrival'] == 0:
-    #         #     departure['arrival'] = 'Due'
-    #         temp_name = departure.direction
-    #         layout.addWidget(self.createDepartureWidget(departure)) 
-                                
-    #     box.setLayout(layout)
-    #     return box
-        
-        
-    # def createDepartureWidget(self, departure):
-    #     box = QGroupBox()
-    #     layout = QHBoxLayout()
-        
-
-    #     layout.addWidget(self.createLabel(departure.line, 'body'))
-    #     layout.addWidget(self.createLabel(departure.direction, 'body'))
-
-    #     try:
-    #         minutes = time_to_depart(departure)
-    #         layout.addWidget(self.createLabel(f'{minutes:0.0f}', 'body'))
-    #     except Exception as e:
-    #         layout.addWidget(self.createLabel(f'{departure.state}', 'body'))
-
-    #     # minutes_diff = (datetime_end - datetime_start).total_seconds() / 60.0
-    #     # layout.addWidget(self.createLabel(str(departure['arrival']), 'body'))
-
-                
-    #     box.setLayout(layout)
-    #     return box
-
-
-    # def createDepartureHeader(self):
-    #     box = QGroupBox()
-    #     layout = QHBoxLayout()  
-    #     layout.addWidget(self.createLabel('Route', 'header'))
-    #     layout.addWidget(self.createLabel('Destination', 'header'))
-    #     #layout.addWidget(self.createLabel('Scheduled', 'header'))
-    #     layout.addWidget(self.createLabel('Expected', 'header'))
-        
-    #     box.setLayout(layout)
-    #     return box
-
-    # def createLabel(self, text, style_class):
-    #     label = QLabel(text)
-    #     label.setProperty('class', style_class)
-    #     return label
-
-    # def createFooter(self):
-    #     box = QGroupBox()
-    #     layout = QHBoxLayout()
-    #     now = datetime.now()
-    #     timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
-    #     layout.addWidget(self.createLabel(timestamp, 'footer'))
-        
-    #     box.setLayout(layout)
-    #     return box
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
