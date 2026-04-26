@@ -4,7 +4,7 @@ from PyQt5.QtGui import QIcon, QKeySequence
 from PyQt5.QtCore import pyqtSlot, QTimer
 from PyQt5.QtCore import Qt
 import dvb
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 
 from collections import namedtuple
@@ -84,7 +84,7 @@ class App(QMainWindow):
         self.stops_to_monitor = [
                                 'Pirnaischerplatz',
                                 'Pragerstr', #pragerstr
-                                # 'Altmarkt',                              
+                                'Altmarkt',                              
                                 # 'Albertplatz',
                                 # 'Bautzner Straße/Rothenberger Straße'
                                 ]
@@ -93,8 +93,9 @@ class App(QMainWindow):
         self.num_rows_per_table = 6  # make additional columns in table when the number of departures to monitor is greater than this number
         self.num_stops_per_page = 1  #
 
-        self.stop_refreshing_after = 600 # seconds
-        self.refresh_interval      = 120 # seconds
+        self.consecutive_autorefresh_timeout_threshold = 10 # number of consecutive autos before times out
+        self.refresh_interval      = 60 # seconds
+        self.clear_interval        = 120 # seconds.  after the last autorefresh, will clear the stored data.
 
         self.css = {}
         with open("table.css",'r') as f:
@@ -117,7 +118,7 @@ class App(QMainWindow):
         
 
         self.columns = [
-                        Column('#'   ,30,get_line,         Qt.AlignHCenter | Qt.AlignBottom),
+                        Column('#'   ,35,get_line,         Qt.AlignHCenter | Qt.AlignBottom),
                         Column(''    ,30,get_mode_emoji,   Qt.AlignLeft | Qt.AlignBottom),
                         Column('Mins',30,get_minutes,      Qt.AlignRight | Qt.AlignBottom),
                         Column('Dest',140,get_destination, Qt.AlignLeft | Qt.AlignBottom),
@@ -134,6 +135,8 @@ class App(QMainWindow):
         self.time_last_updated = None
         self.current_page      = 0
         self.departures        = {} # holds the departures, per-stop.
+        self.num_consecutive_autorefreshes = 0
+        self.is_data_cleared = True
 
         # some helper variables so don't need to keep recomputing them
 
@@ -144,6 +147,9 @@ class App(QMainWindow):
         self.is_nav_needed_prev = len(self.stops_to_monitor) > self.num_stops_per_page
         self.is_nav_needed_next = len(self.stops_to_monitor) > self.num_stops_per_page + 1
         self.num_pages_needed = len(self.stops_to_monitor) // self.num_stops_per_page
+        self.refresh_interval_ms = self.refresh_interval * 1000
+        self.clear_interval_ms = self.clear_interval * 1000
+
 
         # the core of this display.  use this object to make queries into the DVB api.
         self.client = dvb.Client(user_agent="dvb_testing/2026.04.25 silviana amethyst (amethyst@mpi-cbg.de)")
@@ -282,7 +288,7 @@ class App(QMainWindow):
             self.buttons['next'].clicked.connect(lambda x: self.change_page(+1))
 
         self.buttons['refresh'] = QPushButton("🥀")
-        self.buttons['refresh'].clicked.connect(self.rebuild)
+        self.buttons['refresh'].clicked.connect(self.manual_refresh)
 
         if self.is_nav_needed_prev:
             self.bottom_layout.addWidget(self.buttons['prev'])
@@ -294,10 +300,7 @@ class App(QMainWindow):
 
         self.main_layout.addLayout(self.bottom_layout)
 
-    def change_page(self, increment):
-        self.current_page = (increment + self.current_page + self.num_pages_needed) % self.num_pages_needed
-        
-        self.rebuild()
+
 
     def initUI(self):
 
@@ -326,34 +329,124 @@ class App(QMainWindow):
         
 
 
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.rebuild)
-        self.timer.start(120 * 1000) # writing this way to make easier to reason about number of seconds
+        
+
+        self.timer_refresh = QTimer(self)
+        self.timer_refresh.setSingleShot(True)
+        self.timer_refresh.timeout.connect(self.auto_refresh)
+
+        self.timer_stale_data = QTimer(self)
+        self.timer_stale_data.setSingleShot(True)
+        self.timer_stale_data.timeout.connect(self.clear_stale_data)
+        
+
+        self.auto_refresh() # kick it off!
+        
+
+
+    
+
+
+
+    def clear_stale_data(self):
+        self.is_data_cleared = True
+        self.departures = {}
+
+        for ind,t in self.tables.items():
+            for row in range(t.rowCount()):
+                for col in range(t.columnCount()):
+                    item = t.item(row, col)
+                    if item is not None:
+                        item.setText("")
+
+
+    def auto_refresh(self):
+        print('auto_refresh', self.num_consecutive_autorefreshes)
+
+        self.refresh()
+        self.num_consecutive_autorefreshes += 1
+
+        if self.num_consecutive_autorefreshes < self.consecutive_autorefresh_timeout_threshold:
+            self.timer_refresh.start(self.refresh_interval_ms)
+            self.timer_stale_data.stop()
+        else:
+            print('ceasing to auto_refresh')
+            self.timer_stale_data.start(self.clear_interval_ms)
+
+        
+
+
+
+
+
+    def manual_refresh(self):
+        print('manual_refresh')
+
+        self.refresh()
+
+        self.num_consecutive_autorefreshes = 0
+        self.timer_refresh.start(self.refresh_interval_ms)
+        self.timer_stale_data.start(self.clear_interval_ms)
+
+
+
+    def refresh(self):
+        self.is_data_cleared = False
+        self._refresh_all_departures()
+        self._refresh_time()
 
         self.rebuild()
 
-        self.show()#FullScreen()
+    def _refresh_all_departures(self):
 
+        for stop_name in self.stops_to_monitor:
 
-    def rebuild(self):
+            if not self.never_update or stop_name not in self.departures:
+                print(f'getting departures for {stop_name}')
+                self.departures[stop_name] = self.client.monitor(stop=stop_name,limit=0)
+            else:
+                print(f'mock getting departures for {stop_name}')
 
-        self._rebuild_stops()
-        self._rebuild_time()
-        self._rebuild_nav()
+            # unpack
+            departures = self.departures[stop_name]
 
+            # sort the list of departures.  in-place sort.
+            departures.sort(key = get_minutes)
 
-        self.update()
-    
-    def _rebuild_stops(self):
-        for table_ind in range(self.num_stops_per_page):
-            stop_ind = self.current_page*self.num_stops_per_page + table_ind
-
-            self.refresh_table(stop_ind)
-
-    def _rebuild_time(self):
+    def _refresh_time(self):
         self.time_last_updated = datetime.now()
         timestamp = self.time_last_updated.strftime("%Y-%m-%d %H:%M:%S")
         self.time_updated_widget.setText(timestamp)
+
+
+
+
+    def change_page(self, increment):
+        self.current_page = (increment + self.current_page + self.num_pages_needed) % self.num_pages_needed
+        
+        if self.is_data_cleared or (datetime.now()-self.time_last_updated) > timedelta(milliseconds=self.refresh_interval_ms):
+            self.manual_refresh()
+        else:
+            self.rebuild()
+
+    def rebuild(self):
+        """
+        rebuilding uses existing data. it just adjusts what's displayed in the tables and buttons
+        """
+
+        self._rebuild_stops()
+        self._rebuild_nav()
+        self.update()
+        self.show()#FullScreen()
+    
+    def _rebuild_stops(self):
+
+        for table_ind in range(self.num_stops_per_page):
+            stop_ind = self.current_page*self.num_stops_per_page + table_ind
+
+            self.rebuild_table(stop_ind)
+
+
 
     def _rebuild_nav(self):
         if self.is_nav_needed_prev:
@@ -362,7 +455,15 @@ class App(QMainWindow):
         if self.is_nav_needed_next:
             self.buttons['next'].setText(self.stops_to_monitor[(self.current_page*self.num_stops_per_page+self.num_stops_per_page) % len(self.stops_to_monitor)])
 
-    def refresh_table(self, stop_ind):
+
+
+
+
+    def rebuild_table(self, stop_ind):
+        """
+        re-paint the data into the table.  assumes the data is already refreshed.  
+        this uses the existing data in the map self.departures
+        """
 
         if stop_ind >= len(self.stops_to_monitor):
             return
@@ -377,17 +478,8 @@ class App(QMainWindow):
         w = self.header_widgets[table_ind]
         w.setText(stop_name)
 
-        if not self.never_update or stop_name not in self.departures:
-            print(f'getting departures for {stop_name}')
-            self.departures[stop_name] = self.client.monitor(stop=stop_name,limit=0)
-        else:
-            print(f'mock getting departures for {stop_name}')
 
-        # unpack
-        departures = self.departures[stop_name]
-
-        # sort the list of departures
-        departures.sort(key = get_minutes)
+        departures = self.departures[stop_name] # unpack to make shorter
 
         # now we set the data in the tables from the departure list
         for ii,departure in enumerate(departures[:self.num_departures_to_monitor]):
