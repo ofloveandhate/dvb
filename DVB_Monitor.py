@@ -11,17 +11,6 @@ from collections import namedtuple
 
 import numpy as np # for infinity
 
-occupancy_emoji = {
-    'StandingOnly': '🕴️',
-    'ManySeats': '💺',
-    'Unknown': ''
-}
-
-mode_emoji = {
-    'Tram': '🚋',
-    'CityBus': '🚌',
-    'PlusBus': '🚎'
-}
 
 
 
@@ -47,6 +36,20 @@ DEFAULT_CONFIG = {
 
 
 
+
+
+
+occupancy_emoji = {
+    'StandingOnly': '🕴️',
+    'ManySeats': '💺',
+    'Unknown': ''
+}
+
+mode_emoji = {
+    'Tram': '🚋',
+    'CityBus': '🚌',
+    'PlusBus': '🚎'
+}
 
 
 
@@ -107,9 +110,14 @@ class DVB_Monitor(QMainWindow):
                         Column('Dest',140,get_destination, Qt.AlignLeft | Qt.AlignBottom),
                         ]
 
+        self.setup_internal_state()
+        self.setup_dvb_client()
+        self.initUI()
 
 
+    def setup_internal_state(self):
 
+        ##########
         # holds some state through the loop
         self.time_last_updated = None
         self.current_page      = 0
@@ -118,7 +126,7 @@ class DVB_Monitor(QMainWindow):
         self.is_data_cleared = True
 
 
-        #
+        #############
         #  internal variables for holding Qt objects
         #  
         self.main_layout            = None # will hold all the other layouts
@@ -129,6 +137,7 @@ class DVB_Monitor(QMainWindow):
         self.time_updated_widget    = None
         self.horizontalGroupBox     = None
 
+        ###########
         # some helper variables so don't need to keep recomputing them
 
         self.num_cols_per_col = len(self.columns)  # because each departure gets this many, and we use multiple cols of departures
@@ -141,11 +150,11 @@ class DVB_Monitor(QMainWindow):
         self.refresh_interval_ms = self.refresh_interval * 1000
         self.clear_interval_ms = self.clear_interval * 1000
 
-
+    def setup_dvb_client(self):
         # the core of this display.  use this object to make queries into the DVB api.
         self.client = dvb.Client(user_agent=self.dvb_client_name)
-        self.initUI()
-    
+
+
     def setup_from_yaml(self, path="config.yaml"):
         import yaml # pip install pyyaml
 
@@ -162,15 +171,16 @@ class DVB_Monitor(QMainWindow):
                 raise RuntimeError("required entry `dvb_client_name` not found in your `config.yaml` file.  Add it.")
             return user_config
 
-
         user_config = load_config(path)
 
-        
-
+        # read from defaults
         config = DEFAULT_CONFIG.copy()
+
+        # then overwrite with the items from the user's yaml file
         config.update(user_config)
 
-
+        # finally, set the values of internal things from the YAML file.
+        # i forbid myself to use `eval`.
         self.stops_to_monitor = config["stops_to_monitor"]
         self.row_height = config["row_height"]
         self.num_rows_per_table = config["num_rows_per_table"]
@@ -189,8 +199,37 @@ class DVB_Monitor(QMainWindow):
 
         self.num_departures_to_monitor = config["num_departures_to_monitor"]
 
-
         self.dvb_client_name = config["dvb_client_name"]  # there should be no default for this, because the user is supposed to give contact into in this strong.
+        if not self.dvb_client_name:
+            raise RuntimeError('dvb_client_name must not be blank')
+
+        if self.never_update:
+            print('ℹ️ `never_update` is set to true, which is good for development, but bad for actual use.  set to false so it actually updates data')
+
+
+    def initUI(self):
+
+        self.setWindowTitle(self.title)
+        self.setGeometry(self.left, self.top, self.width, self.height)
+        
+        # Create central widget and layout
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+
+
+        self.escape_shortcut = QShortcut(QKeySequence("Escape"), self)
+        self.escape_shortcut.activated.connect(QApplication.quit)
+        print('ℹ️ press escape to close window (when it has focus)')
+
+        self.main_layout = QVBoxLayout(central_widget)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)  # This removes padding around the layout
+        self.setLayout(self.main_layout)
+        
+        self.init_tables()
+        self.setup_bottom()
+        self.setup_timers()
+        
+        self.auto_refresh() # kick it off!
 
 
     def init_tables(self):
@@ -231,16 +270,7 @@ class DVB_Monitor(QMainWindow):
         self.tables[ii] = QTableWidget() # make and assign into dict
         table = self.tables[ii] # get a reference
 
-        table.setRowCount(self.num_rows_per_table)
-        table.setColumnCount(self.num_cols_per_col * self.num_cols_needed)
-
-        
-
-        for jj in range(self.num_rows_per_table):
-            table.setRowHeight(jj, self.row_height) # magic constant
-
-        self.set_column_labels(table)
-
+        self.initialize_table_contents(table)
 
         # Make table non-editable
         table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -254,13 +284,14 @@ class DVB_Monitor(QMainWindow):
         table.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
         table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
 
-        
-
         return table
-        # Set table properties
-        # table.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
 
-    def set_column_labels(self,table):
+    def initialize_table_contents(self,table):
+
+        table.setRowCount(self.num_rows_per_table)
+        table.setColumnCount(self.num_cols_per_col * self.num_cols_needed)
+        for jj in range(self.num_rows_per_table):
+            table.setRowHeight(jj, self.row_height)
 
         col_ind = 0
         for ii in range(self.num_cols_needed):
@@ -284,18 +315,9 @@ class DVB_Monitor(QMainWindow):
                 col_ind += 1
 
         total_width = sum( table.columnWidth(col) for col in range(table.columnCount()))
-            
-
         table.setFixedSize(total_width + 20, self.row_height * (self.num_rows_per_table+1))
 
-    def setup_timeupdated(self):
-        self.time_updated_widget = QLabel()
 
-        w = self.time_updated_widget
-        w.setProperty('class', 'footer')
-        w.setAlignment(Qt.AlignCenter)
-
-        self.main_layout.addWidget(self.time_updated_widget)  # Add text widget here
 
     def setup_bottom(self):
         self.buttons = {}
@@ -304,7 +326,6 @@ class DVB_Monitor(QMainWindow):
 
         self.setup_timeupdated()
 
-        
         if self.is_nav_needed_prev:
             self.buttons['prev'] = QPushButton()
             self.buttons['prev'].clicked.connect(lambda x: self.change_page(-1))
@@ -326,36 +347,19 @@ class DVB_Monitor(QMainWindow):
 
         self.main_layout.addLayout(self.bottom_layout)
 
+    def setup_timeupdated(self):
+        self.time_updated_widget = QLabel()
 
+        w = self.time_updated_widget
+        w.setProperty('class', 'footer')
+        w.setAlignment(Qt.AlignCenter)
 
-    def initUI(self):
-
-
-        self.setWindowTitle(self.title)
-        self.setGeometry(self.left, self.top, self.width, self.height)
-        
-
-
-        # Create central widget and layout
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-
-
-        self.escape_shortcut = QShortcut(QKeySequence("Escape"), self)
-        self.escape_shortcut.activated.connect(QApplication.quit)
-
-        self.main_layout = QVBoxLayout(central_widget)
-        self.main_layout.setContentsMargins(0, 0, 0, 0)  # This removes padding around the layout
-        self.setLayout(self.main_layout)
-        
-
-        self.init_tables()
-        self.setup_bottom()
-        
+        self.main_layout.addWidget(self.time_updated_widget)  # Add text widget here
 
 
         
 
+    def setup_timers(self):
         self.timer_refresh = QTimer(self)
         self.timer_refresh.setSingleShot(True)
         self.timer_refresh.timeout.connect(self.auto_refresh)
@@ -363,12 +367,6 @@ class DVB_Monitor(QMainWindow):
         self.timer_stale_data = QTimer(self)
         self.timer_stale_data.setSingleShot(True)
         self.timer_stale_data.timeout.connect(self.clear_stale_data)
-        
-
-        self.auto_refresh() # kick it off!
-        
-
-
     
 
 
@@ -386,7 +384,6 @@ class DVB_Monitor(QMainWindow):
 
 
     def auto_refresh(self):
-        print('auto_refresh', self.num_consecutive_autorefreshes)
 
         self.refresh()
         self.num_consecutive_autorefreshes += 1
@@ -395,7 +392,6 @@ class DVB_Monitor(QMainWindow):
             self.timer_refresh.start(self.refresh_interval_ms)
             self.timer_stale_data.stop()
         else:
-            print('ceasing to auto_refresh')
             self.timer_stale_data.start(self.clear_interval_ms)
 
         
@@ -405,7 +401,6 @@ class DVB_Monitor(QMainWindow):
 
 
     def manual_refresh(self):
-        print('manual_refresh')
 
         self.refresh()
 
@@ -427,10 +422,11 @@ class DVB_Monitor(QMainWindow):
         for stop_name in self.stops_to_monitor:
 
             if not self.never_update or stop_name not in self.departures:
-                print(f'getting departures for {stop_name}')
+                # print(f'getting departures for {stop_name}')
                 self.departures[stop_name] = self.client.monitor(stop=stop_name,limit=0)
             else:
-                print(f'mock getting departures for {stop_name}')
+                pass
+                # print(f'mock getting departures for {stop_name}')
 
             # unpack
             departures = self.departures[stop_name]
