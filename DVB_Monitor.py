@@ -345,7 +345,7 @@ class App(QMainWindow):
 
         if not self.never_update or stop_name not in self.departures:
             print(f'getting departures for {stop_name}')
-            self.departures[stop_name] = self.client.monitor(stop=stop_name,limit=self.num_departures_to_monitor)
+            self.departures[stop_name] = self.client.monitor(stop=stop_name,limit=0)
         else:
             print(f'mock getting departures for {stop_name}')
 
