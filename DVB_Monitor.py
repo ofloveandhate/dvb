@@ -24,10 +24,6 @@ mode_emoji = {
 }
 
 
-display = {
-    'PiTFT Plus': [0, 0, 480, 320] #https://www.adafruit.com/product/2441
-}
-
 
 DEFAULT_CONFIG = {
     "stops_to_monitor": ["Altmarkt"],
@@ -37,6 +33,11 @@ DEFAULT_CONFIG = {
     "consecutive_autorefresh_timeout_threshold": 10,
     "refresh_interval": 60,
     "clear_interval": 120,
+    "window_width": 480,
+    "window_height": 320,
+    "window_loc_x": 0,
+    "window_loc_y": 0,
+    "never_update": False
     # there is no default dvb client name, i want my user to have to make the entry themselves, so they don't use my email address.
 }
 
@@ -97,20 +98,19 @@ class DVB_Monitor(QMainWindow):
         self.title = "DVB Local Stop Monitor"
 
         self.num_departures_to_monitor = 12 
-        self.never_update = True # set to true to only ever get the departures once.  keeps from requesting repeatedly while in development
 
 
+        self.setup_from_yaml()
 
-
-
-        self.setup_user_config()
-
+        # i don't know how to put these in the yaml, because they tie together functions and objects.
         self.columns = [
                         Column('#'   ,35,get_line,         Qt.AlignHCenter | Qt.AlignBottom),
                         Column(''    ,30,get_mode_emoji,   Qt.AlignLeft | Qt.AlignBottom),
                         Column('Mins',30,get_minutes,      Qt.AlignRight | Qt.AlignBottom),
                         Column('Dest',140,get_destination, Qt.AlignLeft | Qt.AlignBottom),
                         ]
+
+
 
 
         # holds some state through the loop
@@ -120,7 +120,6 @@ class DVB_Monitor(QMainWindow):
         self.num_consecutive_autorefreshes = 0
         self.is_data_cleared = True
 
-        self.left = self.right = self.width = self.height = None
 
         #
         #  internal variables for holding Qt objects
@@ -150,7 +149,7 @@ class DVB_Monitor(QMainWindow):
         self.client = dvb.Client(user_agent=self.dvb_client_name)
         self.initUI()
     
-    def setup_user_config(self, path="config.yaml"):
+    def setup_from_yaml(self, path="config.yaml"):
         import yaml # pip install pyyaml
 
         def load_config(path):
@@ -183,18 +182,15 @@ class DVB_Monitor(QMainWindow):
         self.refresh_interval = config["refresh_interval"]
         self.clear_interval = config["clear_interval"]
 
+        self.width = config["window_width"]
+        self.height = config["window_height"]
+        self.left = config["window_loc_x"]
+        self.top = config["window_loc_y"]
+
+        self.never_update = config["never_update"]
+
         self.dvb_client_name = config["dvb_client_name"]  # there should be no default for this, because the user is supposed to give contact into in this strong.
-
-
-    def setup_window_size(self):
-
-        # get from the dict at the top
-        params = display['PiTFT Plus']
-
-        self.left   = params[0]
-        self.top    = params[1]
-        self.width  = params[2]
-        self.height = params[3]
+        
 
     def init_tables(self):
         
@@ -333,7 +329,6 @@ class DVB_Monitor(QMainWindow):
 
     def initUI(self):
 
-        self.setup_window_size()
 
         self.setWindowTitle(self.title)
         self.setGeometry(self.left, self.top, self.width, self.height)
