@@ -63,48 +63,62 @@ class App(QMainWindow):
         self.title = "DVB Local Stop Monitor"
         self.left = self.right = self.width = self.height = None
 
-        self.num_departures_to_monitor = 12
+        self.num_departures_to_monitor = 12 
+        self.never_update = True # set to true to only ever get the departures once.  keeps from requesting repeatedly while in development
 
-        self.horizontalGroupBox = None
-        self.departures = {}
+        self.stops_to_monitor = [
+                                'Pirnaischerplatz',
+                                'Pragerstr', #pragerstr
+                                # 'Altmarkt',                              
+                                # 'Albertplatz',
+                                # 'Bautzner Straße/Rothenberger Straße'
+                                ]
 
-        self.never_update = True # set to true to only ever get the departures once.  keeps from requesting for no reason.
+        self.row_height         = 30 # pixels
+        self.num_rows_per_table = 6  # make additional columns in table when the number of departures to monitor is greater than this number
+        self.num_stops_per_page = 1  #
 
-        self.main_layout = None # will hold all the other layouts
-
-        self.tables_layout = None # holds the layouts per table on page.
-        self.buttons = None
-        self.layout_per_haltestelle = None
-        self.header_widgets = None
-
-        self.time_updated_widget = None
 
         self.css = {}
         with open("table.css",'r') as f:
             self.css['table'] = f.read()
 
+
+        #
+        #  internal variables for holding Qt objects
+        #  
+        self.main_layout            = None # will hold all the other layouts
+        self.tables_layout          = None # holds the layouts per table on page.
+        self.buttons                = None
+        self.layout_per_haltestelle = None
+        self.header_widgets         = None
+        self.time_updated_widget    = None
+        self.horizontalGroupBox     = None
+
+
+
         
 
 
-        self.row_height = 30
-        self.num_rows_per_table = 6
+        
+
+
+        # an internal config, that has to correspond with the functions below.  i know how to make functional, 
+        # but it's a bit complicated, so i haven't done it yet.
         self.num_cols_per_col = 3  # because each departure gets this many, and we use multiple cols of departures
 
+
+        # holds some state through the loop
+        self.time_last_updated = None
+        self.current_page      = 0
+        self.departures        = {} # holds the departures, per-stop.
+
+        # some helper variables so don't need to keep recomputing them
         self.num_cols_needed = self.num_departures_to_monitor // self.num_rows_per_table
-
-        self.stops_to_monitor = [
-                                'Pirnaischerplatz',
-                                'Pragerstr', #pragerstr
-                                'Altmarkt',                              
-                                # 'Albertplatz',
-                                # 'Bautzner Straße/Rothenberger Straße'
-                                ]
-
-        self.current_page = 0
-        self.num_stops_per_page = 1
-
+        self.is_nav_needed = len(self.stops_to_monitor) > self.num_stops_per_page
         self.num_pages_needed = len(self.stops_to_monitor) // self.num_stops_per_page
 
+        # the core of this display.  use this object to make queries into the DVB api.
         self.client = dvb.Client(user_agent="dvb_testing/2026.04.25 silviana amethyst (amethyst@mpi-cbg.de)")
         self.initUI()
         
@@ -130,7 +144,7 @@ class App(QMainWindow):
         self.layout_per_haltestelle = {}
         self.header_widgets = {}
 
-        for ii in range(self.num_stops_per_page):
+        for ii in range( min(self.num_stops_per_page, len(self.stops_to_monitor))):
 
             self.layout_per_haltestelle[ii] = QVBoxLayout() # make and store
             this_layout = self.layout_per_haltestelle[ii] # unpack
@@ -221,18 +235,23 @@ class App(QMainWindow):
         self.setup_timeupdated()
 
         
-        self.buttons['prev'] = QPushButton()
-        self.buttons['prev'].clicked.connect(lambda x: self.change_page(-1))
+        if self.is_nav_needed:
+            self.buttons['prev'] = QPushButton()
+            self.buttons['prev'].clicked.connect(lambda x: self.change_page(-1))
 
-        self.buttons['next'] = QPushButton()
-        self.buttons['next'].clicked.connect(lambda x: self.change_page(+1))
+            self.buttons['next'] = QPushButton()
+            self.buttons['next'].clicked.connect(lambda x: self.change_page(+1))
 
         self.buttons['refresh'] = QPushButton("🥀")
         self.buttons['refresh'].clicked.connect(self.rebuild)
 
-        self.bottom_layout.addWidget(self.buttons['prev'])
+        if self.is_nav_needed:
+            self.bottom_layout.addWidget(self.buttons['prev'])
+
         self.bottom_layout.addWidget(self.buttons['refresh'])
-        self.bottom_layout.addWidget(self.buttons['next'])
+
+        if self.is_nav_needed:
+            self.bottom_layout.addWidget(self.buttons['next'])
 
         self.main_layout.addLayout(self.bottom_layout)
 
@@ -279,21 +298,33 @@ class App(QMainWindow):
 
     def rebuild(self):
 
+        self._rebuild_stops()
+        self._rebuild_time()
+        self._rebuild_nav()
+
+
+        self.update()
+    
+    def _rebuild_stops(self):
         for table_ind in range(self.num_stops_per_page):
             stop_ind = self.current_page*self.num_stops_per_page + table_ind
 
             self.repop_table(stop_ind)
-        
 
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    def _rebuild_time(self):
+        self.time_last_updated = datetime.now()
+        timestamp = self.time_last_updated.strftime("%Y-%m-%d %H:%M:%S")
         self.time_updated_widget.setText(timestamp)
 
-        self.buttons['prev'].setText(self.stops_to_monitor[(self.current_page*self.num_stops_per_page-1) % len(self.stops_to_monitor)])
-        self.buttons['next'].setText(self.stops_to_monitor[(self.current_page*self.num_stops_per_page+self.num_stops_per_page) % len(self.stops_to_monitor)])
+    def _rebuild_nav(self):
+        if self.is_nav_needed:
+            self.buttons['prev'].setText(self.stops_to_monitor[(self.current_page*self.num_stops_per_page-1) % len(self.stops_to_monitor)])
+            self.buttons['next'].setText(self.stops_to_monitor[(self.current_page*self.num_stops_per_page+self.num_stops_per_page) % len(self.stops_to_monitor)])
 
-        self.update()
-        
     def repop_table(self, stop_ind):
+
+        if stop_ind >= len(self.stops_to_monitor):
+            return
 
         table_ind = stop_ind % self.num_stops_per_page
 
