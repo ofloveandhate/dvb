@@ -70,7 +70,7 @@ def get_minutes(departure):
     return minutes
 
 
-class App(QMainWindow):
+class DVB_Monitor(QMainWindow):
 
     def __init__(self):
         super().__init__()
@@ -490,6 +490,6 @@ if __name__ == '__main__':
     with open("style.css",'r') as f:
         app.setStyleSheet(f.read())
 
-    ex = App()
+    ex = DVB_Monitor()
     sys.exit(app.exec_())
     
