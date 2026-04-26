@@ -26,8 +26,26 @@ mode_emoji = {
 
 display = {
     'PiTFT Plus': [0, 0, 480, 320] #https://www.adafruit.com/product/2441
-
 }
+
+
+DEFAULT_CONFIG = {
+    "stops_to_monitor": ["Altmarkt"],
+    "row_height": 30,
+    "num_rows_per_table": 6,
+    "num_stops_per_page": 1,
+    "consecutive_autorefresh_timeout_threshold": 10,
+    "refresh_interval": 60,
+    "clear_interval": 120,
+    # there is no default dvb client name, i want my user to have to make the entry themselves, so they don't use my email address.
+}
+
+
+
+
+
+
+
 
 
 Column = namedtuple("Column", ["header","width","getter", "alignment"])
@@ -70,32 +88,22 @@ def get_minutes(departure):
     return minutes
 
 
+
 class DVB_Monitor(QMainWindow):
 
     def __init__(self):
         super().__init__()
 
         self.title = "DVB Local Stop Monitor"
-        self.left = self.right = self.width = self.height = None
 
         self.num_departures_to_monitor = 12 
         self.never_update = True # set to true to only ever get the departures once.  keeps from requesting repeatedly while in development
 
-        self.stops_to_monitor = [
-                                'Pirnaischerplatz',
-                                'Pragerstr', #pragerstr
-                                'Altmarkt',                              
-                                # 'Albertplatz',
-                                # 'Bautzner Straße/Rothenberger Straße'
-                                ]
 
-        self.row_height         = 30 # pixels
-        self.num_rows_per_table = 6  # make additional columns in table when the number of departures to monitor is greater than this number
-        self.num_stops_per_page = 1  #
 
-        self.consecutive_autorefresh_timeout_threshold = 10 # number of consecutive autos before times out
-        self.refresh_interval      = 60 # seconds
-        self.clear_interval        = 120 # seconds.  after the last autorefresh, will clear the stored data.
+
+
+        self.setup_user_config()
 
         self.columns = [
                         Column('#'   ,35,get_line,         Qt.AlignHCenter | Qt.AlignBottom),
@@ -104,10 +112,6 @@ class DVB_Monitor(QMainWindow):
                         Column('Dest',140,get_destination, Qt.AlignLeft | Qt.AlignBottom),
                         ]
 
-        
-
-
-
 
         # holds some state through the loop
         self.time_last_updated = None
@@ -115,6 +119,8 @@ class DVB_Monitor(QMainWindow):
         self.departures        = {} # holds the departures, per-stop.
         self.num_consecutive_autorefreshes = 0
         self.is_data_cleared = True
+
+        self.left = self.right = self.width = self.height = None
 
         #
         #  internal variables for holding Qt objects
@@ -141,9 +147,45 @@ class DVB_Monitor(QMainWindow):
 
 
         # the core of this display.  use this object to make queries into the DVB api.
-        self.client = dvb.Client(user_agent="dvb_testing/2026.04.25 silviana amethyst (amethyst@mpi-cbg.de)")
+        self.client = dvb.Client(user_agent=self.dvb_client_name)
         self.initUI()
+    
+    def setup_user_config(self, path="config.yaml"):
+        import yaml # pip install pyyaml
+
+        def load_config(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    user_config =  yaml.safe_load(f)
+            except Exception as e:
+                print("didn't find config.yaml at the current location")
+                print(e)
+                sys.exit(-12039)
+
+            if "dvb_client_name" not in user_config:
+                raise RuntimeError("required entry `dvb_client_name` not found in your `config.yaml` file.  Add it.")
+            return user_config
+
+
+        user_config = load_config(path)
+
         
+
+        config = DEFAULT_CONFIG.copy()
+        config.update(user_config)
+
+
+        self.stops_to_monitor = config["stops_to_monitor"]
+        self.row_height = config["row_height"]
+        self.num_rows_per_table = config["num_rows_per_table"]
+        self.num_stops_per_page = config["num_stops_per_page"]
+        self.consecutive_autorefresh_timeout_threshold = config["consecutive_autorefresh_timeout_threshold"]
+        self.refresh_interval = config["refresh_interval"]
+        self.clear_interval = config["clear_interval"]
+
+        self.dvb_client_name = config["dvb_client_name"]  # there should be no default for this, because the user is supposed to give contact into in this strong.
+
+
     def setup_window_size(self):
 
         # get from the dict at the top

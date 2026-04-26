@@ -1,0 +1,12 @@
+stops_to_monitor:
+  - Pirnaischerplatz
+  - Pragerstr
+  - Altmarkt
+
+row_height: 30                # pixels
+num_rows_per_table: 6         # make additional columns when departures exceed this
+num_stops_per_page: 1
+
+consecutive_autorefresh_timeout_threshold: 10
+refresh_interval: 60          # seconds
+clear_interval: 120           # seconds
