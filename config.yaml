@@ -18,3 +18,7 @@ window_loc_x: 0
 window_loc_y: 0
 
 never_update: true
+
+window_title: "DVB Local Stop Monitor"
+num_departures_to_monitor: 12 
+

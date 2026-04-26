@@ -37,7 +37,9 @@ DEFAULT_CONFIG = {
     "window_height": 320,
     "window_loc_x": 0,
     "window_loc_y": 0,
-    "never_update": False
+    "never_update": False,
+    "window_title": "DVB Local Stop Monitor",
+    "num_departures_to_monitor":12 
     # there is no default dvb client name, i want my user to have to make the entry themselves, so they don't use my email address.
 }
 
@@ -94,11 +96,6 @@ class DVB_Monitor(QMainWindow):
 
     def __init__(self):
         super().__init__()
-
-        self.title = "DVB Local Stop Monitor"
-
-        self.num_departures_to_monitor = 12 
-
 
         self.setup_from_yaml()
 
@@ -188,9 +185,13 @@ class DVB_Monitor(QMainWindow):
         self.top = config["window_loc_y"]
 
         self.never_update = config["never_update"]
+        self.title = config["window_title"]
+
+        self.num_departures_to_monitor = config["num_departures_to_monitor"]
+
 
         self.dvb_client_name = config["dvb_client_name"]  # there should be no default for this, because the user is supposed to give contact into in this strong.
-        
+
 
     def init_tables(self):
         
