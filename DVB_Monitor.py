@@ -116,6 +116,8 @@ class App(QMainWindow):
         # some helper variables so don't need to keep recomputing them
         self.num_cols_needed = self.num_departures_to_monitor // self.num_rows_per_table
         self.is_nav_needed = len(self.stops_to_monitor) > self.num_stops_per_page
+        self.is_nav_needed_prev = len(self.stops_to_monitor) > self.num_stops_per_page
+        self.is_nav_needed_next = len(self.stops_to_monitor) > self.num_stops_per_page + 1
         self.num_pages_needed = len(self.stops_to_monitor) // self.num_stops_per_page
 
         # the core of this display.  use this object to make queries into the DVB api.
@@ -235,22 +237,23 @@ class App(QMainWindow):
         self.setup_timeupdated()
 
         
-        if self.is_nav_needed:
+        if self.is_nav_needed_prev:
             self.buttons['prev'] = QPushButton()
             self.buttons['prev'].clicked.connect(lambda x: self.change_page(-1))
 
+        if self.is_nav_needed_next:
             self.buttons['next'] = QPushButton()
             self.buttons['next'].clicked.connect(lambda x: self.change_page(+1))
 
         self.buttons['refresh'] = QPushButton("🥀")
         self.buttons['refresh'].clicked.connect(self.rebuild)
 
-        if self.is_nav_needed:
+        if self.is_nav_needed_prev:
             self.bottom_layout.addWidget(self.buttons['prev'])
 
         self.bottom_layout.addWidget(self.buttons['refresh'])
 
-        if self.is_nav_needed:
+        if self.is_nav_needed_next:
             self.bottom_layout.addWidget(self.buttons['next'])
 
         self.main_layout.addLayout(self.bottom_layout)
@@ -317,8 +320,10 @@ class App(QMainWindow):
         self.time_updated_widget.setText(timestamp)
 
     def _rebuild_nav(self):
-        if self.is_nav_needed:
+        if self.is_nav_needed_prev:
             self.buttons['prev'].setText(self.stops_to_monitor[(self.current_page*self.num_stops_per_page-1) % len(self.stops_to_monitor)])
+
+        if self.is_nav_needed_next:
             self.buttons['next'].setText(self.stops_to_monitor[(self.current_page*self.num_stops_per_page+self.num_stops_per_page) % len(self.stops_to_monitor)])
 
     def repop_table(self, stop_ind):
