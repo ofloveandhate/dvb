@@ -97,10 +97,24 @@ class App(QMainWindow):
         self.refresh_interval      = 60 # seconds
         self.clear_interval        = 120 # seconds.  after the last autorefresh, will clear the stored data.
 
-        self.css = {}
-        with open("table.css",'r') as f:
-            self.css['table'] = f.read()
+        self.columns = [
+                        Column('#'   ,35,get_line,         Qt.AlignHCenter | Qt.AlignBottom),
+                        Column(''    ,30,get_mode_emoji,   Qt.AlignLeft | Qt.AlignBottom),
+                        Column('Mins',30,get_minutes,      Qt.AlignRight | Qt.AlignBottom),
+                        Column('Dest',140,get_destination, Qt.AlignLeft | Qt.AlignBottom),
+                        ]
 
+        
+
+
+
+
+        # holds some state through the loop
+        self.time_last_updated = None
+        self.current_page      = 0
+        self.departures        = {} # holds the departures, per-stop.
+        self.num_consecutive_autorefreshes = 0
+        self.is_data_cleared = True
 
         #
         #  internal variables for holding Qt objects
@@ -112,31 +126,6 @@ class App(QMainWindow):
         self.header_widgets         = None
         self.time_updated_widget    = None
         self.horizontalGroupBox     = None
-
-
-
-        
-
-        self.columns = [
-                        Column('#'   ,35,get_line,         Qt.AlignHCenter | Qt.AlignBottom),
-                        Column(''    ,30,get_mode_emoji,   Qt.AlignLeft | Qt.AlignBottom),
-                        Column('Mins',30,get_minutes,      Qt.AlignRight | Qt.AlignBottom),
-                        Column('Dest',140,get_destination, Qt.AlignLeft | Qt.AlignBottom),
-                        
-                        ]
-
-        
-
-
-
-
-
-        # holds some state through the loop
-        self.time_last_updated = None
-        self.current_page      = 0
-        self.departures        = {} # holds the departures, per-stop.
-        self.num_consecutive_autorefreshes = 0
-        self.is_data_cleared = True
 
         # some helper variables so don't need to keep recomputing them
 
@@ -219,8 +208,6 @@ class App(QMainWindow):
 
         # Hide row labels (vertical header)
         table.verticalHeader().setVisible(False)
-
-        table.setStyleSheet(self.css['table'])
 
         table.horizontalHeader().setStretchLastSection(False)
         table.verticalHeader().setStretchLastSection(False)
@@ -498,17 +485,10 @@ class App(QMainWindow):
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    app.setStyleSheet(
-    '''
-    QGroupBox{background-color: black;}
-    QLabel.header{font-size: 27pt; color: white; background-color: blue;}
-    QLabel.title{font-size: 24pt; color: white;}
-    QLabel.haltestelle_header{font-size: 18pt; color: white;}
 
-    QLabel.body{font-size: 23pt; color: white;}
-    QLabel.footer{font-size: 8pt; color: white;}
-    ''')
 
+    with open("style.css",'r') as f:
+        app.setStyleSheet(f.read())
 
     ex = App()
     sys.exit(app.exec_())
