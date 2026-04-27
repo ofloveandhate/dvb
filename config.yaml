@@ -17,7 +17,9 @@ window_height: 320  # PiTFT Plus': [0, 0, 480, 320] #https://www.adafruit.com/pr
 window_loc_x: 0
 window_loc_y: 0
 
-never_update: true
+mock_update: false
+
+verbosity: 0
 
 window_title: "DVB Local Stop Monitor"
 num_departures_to_monitor: 12 

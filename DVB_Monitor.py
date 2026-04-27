@@ -26,9 +26,10 @@ DEFAULT_CONFIG = {
     "window_height": 320,
     "window_loc_x": 0,
     "window_loc_y": 0,
-    "never_update": False,
+    "mock_update": False,
     "window_title": "DVB Local Stop Monitor",
-    "num_departures_to_monitor":12 
+    "num_departures_to_monitor":12,
+    "verbosity": 0
     # there is no default dvb client name, i want my user to have to make the entry themselves, so they don't use my email address.
 }
 
@@ -194,17 +195,19 @@ class DVB_Monitor(QMainWindow):
         self.left = config["window_loc_x"]
         self.top = config["window_loc_y"]
 
-        self.never_update = config["never_update"]
+        self.mock_update = config["mock_update"]
         self.title = config["window_title"]
 
         self.num_departures_to_monitor = config["num_departures_to_monitor"]
+
+        self.verbosity = config["verbosity"]
 
         self.dvb_client_name = config["dvb_client_name"]  # there should be no default for this, because the user is supposed to give contact into in this strong.
         if not self.dvb_client_name:
             raise RuntimeError('dvb_client_name must not be blank')
 
-        if self.never_update:
-            print('ℹ️ `never_update` is set to true, which is good for development, but bad for actual use.  set to false so it actually updates data')
+        if self.mock_update:
+            print('ℹ️ `mock_update` is set to true, which is good for development, but bad for actual use.  set to false so it actually updates data')
 
 
     def initUI(self):
@@ -421,12 +424,15 @@ class DVB_Monitor(QMainWindow):
 
         for stop_name in self.stops_to_monitor:
 
-            if not self.never_update or stop_name not in self.departures:
-                # print(f'getting departures for {stop_name}')
+            if not self.mock_update or stop_name not in self.departures:
+
+                if self.verbosity>=1:
+                    print(f'getting departures for {stop_name}')
                 self.departures[stop_name] = self.client.monitor(stop=stop_name,limit=0)
+                self.time_last_updated = datetime.now()
             else:
-                pass
-                # print(f'mock getting departures for {stop_name}')
+                if self.verbosity>=1:
+                    print(f'mock getting departures for {stop_name}')
 
             # unpack
             departures = self.departures[stop_name]
@@ -435,9 +441,14 @@ class DVB_Monitor(QMainWindow):
             departures.sort(key = get_minutes)
 
     def _refresh_time(self):
-        self.time_last_updated = datetime.now()
+
+        
         timestamp = self.time_last_updated.strftime("%Y-%m-%d %H:%M:%S")
-        self.time_updated_widget.setText(timestamp)
+        more_text = ''
+        if self.mock_update:
+            more_text = "`mock_update` is set to true. "
+
+        self.time_updated_widget.setText(f'{more_text}{timestamp}')
 
 
 
