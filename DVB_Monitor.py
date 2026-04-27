@@ -375,6 +375,9 @@ class DVB_Monitor(QMainWindow):
 
 
     def clear_stale_data(self):
+        if self.verbosity>=1:
+            print('clearing stale data, waiting for refresh button push.')
+
         self.is_data_cleared = True
         self.departures = {}
 
@@ -387,6 +390,8 @@ class DVB_Monitor(QMainWindow):
 
 
     def auto_refresh(self):
+        if self.verbosity>=1:
+            print('auto refreshing.')
 
         self.refresh()
         self.num_consecutive_autorefreshes += 1
@@ -404,6 +409,8 @@ class DVB_Monitor(QMainWindow):
 
 
     def manual_refresh(self):
+        if self.verbosity>=1:
+            print('manually refreshing.')
 
         self.refresh()
 
@@ -442,7 +449,7 @@ class DVB_Monitor(QMainWindow):
 
     def _refresh_time(self):
 
-        
+
         timestamp = self.time_last_updated.strftime("%Y-%m-%d %H:%M:%S")
         more_text = ''
         if self.mock_update:
