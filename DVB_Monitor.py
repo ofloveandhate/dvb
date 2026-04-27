@@ -388,6 +388,8 @@ class DVB_Monitor(QMainWindow):
                     if item is not None:
                         item.setText("")
 
+        self.time_updated_widget.setText(f'Stale data cleared.  Refresh to start again.')
+
 
     def auto_refresh(self):
         if self.verbosity>=1:
