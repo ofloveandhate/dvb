@@ -49,7 +49,8 @@ occupancy_emoji = {
 mode_emoji = {
     'Tram': '🚋',
     'CityBus': '🚌',
-    'PlusBus': '🚎'
+    'PlusBus': '🚎',
+    'IntercityBus': '🚍'
 }
 
 
