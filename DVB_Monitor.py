@@ -34,7 +34,7 @@ DEFAULT_CONFIG = {
 }
 
 
-
+ROTATION = 90
 
 
 
@@ -97,10 +97,78 @@ def get_minutes(departure):
 
 
 
+
+from PyQt5.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout
+from PyQt5.QtCore import QObject, QEvent, Qt
+from PyQt5.QtGui import QMouseEvent, QCursor
+from PyQt5.QtCore import QObject, QEvent, QPoint, Qt
+
+def transform_coords(x, y, rotation, w, h):
+    if rotation == 90:
+        return y, w - x
+    elif rotation == 180:
+        return w - x, h - y
+    elif rotation == 270:
+        return h - y, x
+    else:
+        return x, y
+
+
+class TouchFilter(QObject):
+    def __init__(self, app, ROTATION, SCREEN_W, SCREEN_H):
+        super().__init__()
+        self.app = app
+        self.ROTATION = ROTATION
+        self.SCREEN_W = SCREEN_W
+        self.SCREEN_H = SCREEN_H
+        self.processing = False  # guard flag
+
+        # print(f'touch filter {ROTATION} {SCREEN_W} {SCREEN_H}')
+
+    def eventFilter(self, obj, event):
+        if self.processing:
+            return False
+
+        if event.type() in (
+            QEvent.MouseButtonPress,
+            QEvent.MouseButtonRelease,
+            QEvent.MouseMove,
+        ):
+            raw_x = event.globalPos().x()
+            raw_y = event.globalPos().y()
+            new_x, new_y = transform_coords(raw_x, raw_y, self.ROTATION, self.SCREEN_W, self.SCREEN_H)
+
+            # print(f"raw=({raw_x},{raw_y}) fixed=({new_x},{new_y})")
+
+            target = self.app.widgetAt(new_x, new_y)
+            if target is None:
+                return True  # block it anyway
+
+            local_pos = target.mapFromGlobal(QPoint(new_x, new_y))
+
+            new_event = QMouseEvent(
+                event.type(),
+                local_pos,
+                QPoint(new_x, new_y),
+                event.button(),
+                event.buttons(),
+                event.modifiers(),
+            )
+
+            self.processing = True
+            self.app.sendEvent(target, new_event)
+            self.processing = False
+            return True  # ALWAYS block original event
+
+        return False
+
+
 class DVB_Monitor(QMainWindow):
 
-    def __init__(self):
+    def __init__(self, app):
         super().__init__()
+
+        self.app = app
 
         self.setup_from_yaml()
 
@@ -216,6 +284,8 @@ class DVB_Monitor(QMainWindow):
         self.setWindowTitle(self.title)
         self.setGeometry(self.left, self.top, self.width, self.height)
         
+        
+
         # Create central widget and layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -233,8 +303,22 @@ class DVB_Monitor(QMainWindow):
         self.setup_bottom()
         self.setup_timers()
         
+        self.setup_touch()
+
         self.auto_refresh() # kick it off!
 
+
+    def setup_touch(self):
+        # Install filter on the app - catches ALL events in ALL windows
+        self.touch_filter = TouchFilter(self.app, ROTATION, self.width, self.height)
+        self.installEventFilter(self.touch_filter)
+
+        self._install_filter_on_children()
+
+    def _install_filter_on_children(self):
+        # Install on every child widget recursively
+        for widget in self.findChildren(QWidget):
+            widget.installEventFilter(self.touch_filter)
 
     def init_tables(self):
         
@@ -542,9 +626,11 @@ if __name__ == '__main__':
     app = QApplication(sys.argv)
 
 
+
+
     with open("style.css",'r') as f:
         app.setStyleSheet(f.read())
 
-    ex = DVB_Monitor()
+    ex = DVB_Monitor(app)
     sys.exit(app.exec_())
     
