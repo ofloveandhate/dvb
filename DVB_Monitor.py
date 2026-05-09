@@ -263,6 +263,9 @@ class DVB_Monitor(QMainWindow):
         self.setup_from_yaml(path=config_path)
 
         self.setup_internal_state()
+        
+        self.validate_config()                   # check everything is sane
+
         self.setup_dvb_client()
         self.initUI()
 
@@ -305,7 +308,7 @@ class DVB_Monitor(QMainWindow):
 
         import math
         self.num_cols_needed = math.ceil(self.num_departures_to_monitor / self.num_rows_per_table)
-        
+
         self.is_nav_needed = len(self.stops_to_monitor) > self.num_stops_per_page
         self.is_nav_needed_prev = len(self.stops_to_monitor) > self.num_stops_per_page
         self.is_nav_needed_next = len(self.stops_to_monitor) > self.num_stops_per_page + 1
@@ -397,6 +400,74 @@ class DVB_Monitor(QMainWindow):
 
         if self.mock_update:
             print('ℹ️ `mock_update` is set to true, which is good for development, but bad for actual use.  set to false so it actually updates data')
+
+    def validate_config(self):
+        import math
+        errors = []
+        warnings = []
+
+        # compute total column width
+        col_width_per_group = sum(col.width + col.margin_right for col in self.columns)
+        num_cols_needed = math.ceil(self.num_departures_to_monitor / self.num_rows_per_table)
+        total_table_width = col_width_per_group * num_cols_needed
+
+        # check table fits in window
+        if total_table_width > self.width:
+            errors.append(
+                f"Table is too wide: {num_cols_needed} column groups x {col_width_per_group}px = "
+                f"{total_table_width}px, but window is only {self.width}px wide.\n"
+                f"  Possible fixes:\n"
+                f"    - reduce num_departures_to_monitor (currently {self.num_departures_to_monitor})\n"
+                f"    - increase num_rows_per_table (currently {self.num_rows_per_table})\n"
+                f"    - reduce column widths in config\n"
+                f"    - increase window_width (currently {self.width})"
+            )
+
+        # check table fits vertically
+        total_table_height = self.row_height * (self.num_rows_per_table + 1)  # +1 for header
+        if total_table_height > self.height:
+            errors.append(
+                f"Table is too tall: {self.num_rows_per_table} rows x {self.row_height}px = "
+                f"{total_table_height}px, but window is only {self.height}px tall.\n"
+                f"  Possible fixes:\n"
+                f"    - reduce num_rows_per_table (currently {self.num_rows_per_table})\n"
+                f"    - reduce row_height (currently {self.row_height})\n"
+                f"    - increase window_height (currently {self.height})"
+            )
+
+        # check num_departures_to_monitor is sensible
+        if self.num_departures_to_monitor < 1:
+            errors.append(f"num_departures_to_monitor must be at least 1, got {self.num_departures_to_monitor}")
+
+        # check num_rows_per_table is sensible
+        if self.num_rows_per_table < 1:
+            errors.append(f"num_rows_per_table must be at least 1, got {self.num_rows_per_table}")
+
+        # check refresh interval
+        if self.refresh_interval < 10:
+            warnings.append(f"refresh_interval is {self.refresh_interval}s which is very fast, DVB api may rate limit you")
+
+        # check stops list
+        if not self.stops_to_monitor:
+            errors.append("stops_to_monitor is empty, add at least one stop")
+
+        # check window size is sensible
+        if self.width < 100 or self.height < 100:
+            errors.append(f"window size {self.width}x{self.height} seems too small")
+
+        # report warnings
+        for w in warnings:
+            print(f"⚠️  WARNING: {w}")
+
+        # report errors and exit if any
+        if errors:
+            print(f"\n❌ Found {len(errors)} configuration error(s):\n")
+            for i, e in enumerate(errors, 1):
+                print(f"  {i}. {e}\n")
+            sys.exit(1)
+
+        if self.verbosity>0:
+            print(f"✅ config OK: {num_cols_needed} column groups x {col_width_per_group}px = {total_table_width}px wide")
 
 
     def initUI(self):
