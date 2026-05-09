@@ -32,10 +32,10 @@ DEFAULT_CONFIG = {
     "verbosity": 0,
 
     "columns": [
-        {"header": "#",    "width": 35,  "getter": "get_line",        "alignment": "center"},
-        {"header": "",     "width": 30,  "getter": "get_mode_emoji",  "alignment": "left"},
-        {"header": "Mins", "width": 30,  "getter": "get_minutes",     "alignment": "right"},
-        {"header": "Dest", "width": 140, "getter": "get_destination", "alignment": "left"},
+        {"header": "#",    "width": 35,  "getter": "get_line",        "alignment": "center", "margin_right": 0},
+        {"header": "",     "width": 30,  "getter": "get_mode_emoji",  "alignment": "left", "margin_right": 0},
+        {"header": "Mins", "width": 30,  "getter": "get_minutes",     "alignment": "right", "margin_right": 0},
+        {"header": "Dest", "width": 140, "getter": "get_destination", "alignment": "left", "margin_right": 0},
     ],
 
     "is_full_screen": False,
@@ -64,7 +64,7 @@ mode_emoji = {
 
 
 
-Column = namedtuple("Column", ["header","width","getter", "alignment"])
+Column = namedtuple("Column", ["header", "width", "getter", "alignment", "margin_right"])
 
 def get_line(departure):
     return departure.line
@@ -191,6 +191,68 @@ class TouchFilter(QObject):
         return False
 
 
+
+class StopDisplay(QWidget):
+    """Replaces QTableWidget for one stop"""
+    
+    def __init__(self, columns, num_rows, num_cols_needed, row_height):
+        super().__init__()
+        self.columns = columns
+        self.num_rows = num_rows
+        self.num_cols_needed = num_cols_needed
+        self.row_height = row_height
+        self.labels = {}  # keyed by (row, col)
+        
+        self.grid = QGridLayout()
+        self.grid.setSpacing(0)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.setLayout(self.grid)
+        
+        self._build_grid()
+    
+    def _build_grid(self):
+        num_cols_per_group = len(self.columns)
+
+        for col_group in range(self.num_cols_needed):
+            for col_ind, col in enumerate(self.columns):
+                grid_col = col_group * num_cols_per_group + col_ind
+
+                # header
+                header = QLabel(col.header)
+                header.setAlignment(Qt.AlignCenter)
+                header.setFixedSize(col.width, self.row_height)
+                header.setProperty('class', 'grid_header')
+                header.setContentsMargins(0, 0, col.margin_right, 0)  # right margin
+                self.grid.addWidget(header, 0, grid_col)
+
+                # data rows
+                for row in range(self.num_rows):
+                    label = QLabel('?')
+                    label.setAlignment(col.alignment)
+                    label.setFixedSize(col.width, self.row_height)
+                    label.setProperty('class', 'grid_cell')
+                    label.setContentsMargins(0, 0, col.margin_right, 0)  # right margin
+                    self.grid.addWidget(label, row + 1, grid_col)
+                    self.labels[(row, grid_col)] = label
+    
+    def set_cell(self, row, col, text):
+        """Set text of a cell"""
+        if (row, col) in self.labels:
+            self.labels[(row, col)].setText(text)
+    
+    def clear(self):
+        """Clear all cells"""
+        for label in self.labels.values():
+            label.setText('')
+    
+    def set_cell_style(self, row, col, style_class):
+        """Change styling of a cell"""
+        if (row, col) in self.labels:
+            self.labels[(row, col)].setProperty('class', style_class)
+            self.labels[(row, col)].style().unpolish(self.labels[(row, col)])
+            self.labels[(row, col)].style().polish(self.labels[(row, col)])
+
+
 class DVB_Monitor(QMainWindow):
 
     def __init__(self, app, config_path):
@@ -308,10 +370,11 @@ class DVB_Monitor(QMainWindow):
                                    f"Valid options: {list(ALIGNMENT_REGISTRY.keys())}")
 
             self.columns.append(Column(
-                header    = col["header"],
-                width     = col["width"],
-                getter    = GETTER_REGISTRY[getter_name],
-                alignment = ALIGNMENT_REGISTRY[alignment_name],
+                header      = col["header"],
+                width       = col["width"],
+                getter      = GETTER_REGISTRY[getter_name],
+                alignment   = ALIGNMENT_REGISTRY[alignment_name],
+                margin_right= col.get("margin_right", 0),  # default to 0 if not specified
             ))
 
 
@@ -353,6 +416,15 @@ class DVB_Monitor(QMainWindow):
         self.escape_shortcut.activated.connect(QApplication.quit)
         print('ℹ️ press escape to close window (when it has focus)')
 
+        self.shortcut_prev = QShortcut(QKeySequence(Qt.Key_Left), self)
+        self.shortcut_prev.activated.connect(lambda: self.change_page(-1))
+
+        self.shortcut_next = QShortcut(QKeySequence(Qt.Key_Right), self)
+        self.shortcut_next.activated.connect(lambda: self.change_page(+1))
+
+        self.shortcut_refresh = QShortcut(QKeySequence(Qt.Key_Up), self)
+        self.shortcut_refresh.activated.connect(self.manual_refresh)
+
         self.main_layout = QVBoxLayout(central_widget)
         self.main_layout.setContentsMargins(0, 0, 0, 0)  # This removes padding around the layout
         self.setLayout(self.main_layout)
@@ -380,23 +452,22 @@ class DVB_Monitor(QMainWindow):
             widget.installEventFilter(self.touch_filter)
 
     def init_tables(self):
-        
-        # make a new layout to hold this
         self.tables_layout = QHBoxLayout()
-
-        # make the tables 
         self.tables = {}
-
-        # m
         self.layout_per_haltestelle = {}
         self.header_widgets = {}
 
-        for ii in range( min(self.num_stops_per_page, len(self.stops_to_monitor))):
+        for ii in range(min(self.num_stops_per_page, len(self.stops_to_monitor))):
+            self.layout_per_haltestelle[ii] = QVBoxLayout()
+            this_layout = self.layout_per_haltestelle[ii]
 
-            self.layout_per_haltestelle[ii] = QVBoxLayout() # make and store
-            this_layout = self.layout_per_haltestelle[ii] # unpack
-
-            self.setup_table(ii)
+            # create StopDisplay instead of QTableWidget
+            self.tables[ii] = StopDisplay(
+                columns        = self.columns,
+                num_rows       = self.num_rows_per_table,
+                num_cols_needed= self.num_cols_needed,
+                row_height     = self.row_height,
+            )
 
             self.header_widgets[ii] = QLabel()
             w = self.header_widgets[ii]
@@ -405,7 +476,6 @@ class DVB_Monitor(QMainWindow):
 
             this_layout.addWidget(w)
             this_layout.addWidget(self.tables[ii])
-
             self.tables_layout.addLayout(this_layout)
 
         self.main_layout.addLayout(self.tables_layout)
@@ -654,31 +724,23 @@ class DVB_Monitor(QMainWindow):
             return
 
         table_ind = stop_ind % self.num_stops_per_page
-
-        # unpack to make shorter
-        table = self.tables[table_ind]
-
+        table = self.tables[table_ind]  # now a StopDisplay
+        
         stop_name = self.stops_to_monitor[stop_ind]
+        self.header_widgets[table_ind].setText(stop_name)
 
-        w = self.header_widgets[table_ind]
-        w.setText(stop_name)
+        table.clear()  # clear old data
 
+        departures = self.departures[stop_name]
 
-        departures = self.departures[stop_name] # unpack to make shorter
-
-        # now we set the data in the tables from the departure list
-        for ii,departure in enumerate(departures[:self.num_departures_to_monitor]):
-
-            row = ii%self.num_rows_per_table
-            col = ii//self.num_rows_per_table * self.num_cols_per_col
-
-            for shift,c in enumerate(self.columns):
-                val = c.getter(departure) # get the value using the getter function
-
-                item = table.item(row, col+shift) # get the item from the table.  assumes it was created above in the init routines.
-
-                #finally, set the value.
-                item.setText(f'{val}')
+        for ii, departure in enumerate(departures[:self.num_departures_to_monitor]):
+            row = ii % self.num_rows_per_table
+            col_group = ii // self.num_rows_per_table
+            
+            for shift, c in enumerate(self.columns):
+                val = c.getter(departure)
+                grid_col = col_group * len(self.columns) + shift
+                table.set_cell(row, grid_col, f'{val}')
 
 
 if __name__ == '__main__':
