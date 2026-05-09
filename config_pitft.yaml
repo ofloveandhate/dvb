@@ -24,6 +24,8 @@ verbosity: 0
 window_title: "DVB Local Stop Monitor"
 num_departures_to_monitor: 12 
 
+css_file: "style_pitft.css"
+
 is_touch: true
 is_touch_calibrated: true
 touch_raw_x_min: 46
