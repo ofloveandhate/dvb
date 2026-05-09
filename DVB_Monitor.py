@@ -6,7 +6,7 @@ from PyQt5.QtCore import Qt
 import dvb
 from datetime import datetime, timezone, timedelta
 
-
+import argparse
 from collections import namedtuple
 
 import numpy as np # for infinity
@@ -193,12 +193,12 @@ class TouchFilter(QObject):
 
 class DVB_Monitor(QMainWindow):
 
-    def __init__(self, app):
+    def __init__(self, app, config_path):
         super().__init__()
 
         self.app = app
 
-        self.setup_from_yaml()
+        self.setup_from_yaml(path=config_path)
 
         self.setup_internal_state()
         self.setup_dvb_client()
@@ -254,7 +254,7 @@ class DVB_Monitor(QMainWindow):
         self.client = dvb.Client(user_agent=self.dvb_client_name)
 
 
-    def setup_from_yaml(self, path="config.yaml"):
+    def setup_from_yaml(self, path):
         import yaml # pip install pyyaml
 
         def load_config(path):
@@ -682,6 +682,17 @@ class DVB_Monitor(QMainWindow):
 
 
 if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser(description='DVB Monitor')
+    parser.add_argument(
+        '--config',
+        default='config.yaml',
+        help='path to config yaml file (default: config.yaml)'
+    )
+    args = parser.parse_args()
+
+
+
     app = QApplication(sys.argv)
 
 
@@ -690,6 +701,6 @@ if __name__ == '__main__':
     with open("style.css",'r') as f:
         app.setStyleSheet(f.read())
 
-    ex = DVB_Monitor(app)
+    ex = DVB_Monitor(app, config_path=args.config)
     sys.exit(app.exec_())
     
