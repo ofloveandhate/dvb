@@ -35,6 +35,10 @@ touch_raw_y_max: 287
 
 is_full_screen: true
 
+backlight_path:        "/sys/class/backlight/soc:backlight/brightness"
+backlight_max:         1    
+use_backlight_control: true
+
 columns:
   - header: "#"
     width: 35

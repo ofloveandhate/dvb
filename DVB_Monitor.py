@@ -46,13 +46,15 @@ DEFAULT_CONFIG = {
     "is_full_screen": False,
     "is_touch": False,
     "touch_rotation": 270,
-
-
     "is_touch_calibrated": False,
     "touch_raw_x_min": 46,
     "touch_raw_x_max": 434,
     "touch_raw_y_min": 22,
     "touch_raw_y_max": 287,
+
+    "backlight_path":        "/sys/class/backlight/soc:backlight/brightness",
+    "backlight_max":         1,    # ADD THIS so it's configurable
+    "use_backlight_control": False,
 
     "css_file": "style.css",
 
@@ -179,6 +181,7 @@ class TouchFilter(QObject):
         self.x_max         = x_max
         self.y_min         = y_min
         self.y_max         = y_max
+        self.wake_callback = None  # set this to backlight_on function
 
     def _transform(self, x, y):
         if self.is_calibrated:
@@ -200,9 +203,13 @@ class TouchFilter(QObject):
             QEvent.MouseButtonRelease,
             QEvent.MouseMove,
         ):
+            # if screen is off, any touch just wakes it up and blocks the event
+            if self.wake_callback and self.wake_callback():
+                return True  # block the event, just wake
+
             raw_x = event.globalPos().x()
             raw_y = event.globalPos().y()
-            new_x, new_y = self._transform(raw_x, raw_y)  # <- only change here
+            new_x, new_y = self._transform(raw_x, raw_y)
 
             target = self.app.widgetAt(new_x, new_y)
             if target is None:
@@ -312,6 +319,9 @@ class ElidedLabel(QLabel):
         painter.drawText(self.rect(), self.alignment(), elided)
 
 
+
+
+
 class DVB_Monitor(QMainWindow):
 
     def __init__(self, app, config_path):
@@ -348,6 +358,7 @@ class DVB_Monitor(QMainWindow):
         self.num_consecutive_autorefreshes = 0
         self.is_data_cleared = True
 
+        self.is_backlight_off = False
 
         #############
         #  internal variables for holding Qt objects
@@ -461,6 +472,10 @@ class DVB_Monitor(QMainWindow):
         self.touch_raw_y_min     = config["touch_raw_y_min"]
         self.touch_raw_y_max     = config["touch_raw_y_max"]
 
+        self.backlight_path        = config["backlight_path"]
+        self.backlight_max         = config["backlight_max"]
+        self.use_backlight_control = config["use_backlight_control"]
+
         self.css_file = config["css_file"]
 
         self.dvb_client_name = config["dvb_client_name"]  # there should be no default for this, because the user is supposed to give contact into in this strong.
@@ -477,20 +492,18 @@ class DVB_Monitor(QMainWindow):
 
         # compute total column width
         col_width_per_group = sum(col.width + col.margin_right for col in self.columns)
-        num_cols_needed     = math.ceil(self.num_departures_to_monitor / self.num_rows_per_table)
-        total_table_width   = (col_width_per_group * num_cols_needed) + (self.column_group_spacing * (num_cols_needed - 1))
+        num_cols_needed = math.ceil(self.num_departures_to_monitor / self.num_rows_per_table)
+        total_table_width = col_width_per_group * num_cols_needed
 
         # check table fits in window
         if total_table_width > self.width:
             errors.append(
-                f"Table is too wide: {num_cols_needed} column groups x {col_width_per_group}px "
-                f"+ {num_cols_needed - 1} spacers x {self.column_group_spacing}px "
-                f"= {total_table_width}px, but window is only {self.width}px wide.\n"
+                f"Table is too wide: {num_cols_needed} column groups x {col_width_per_group}px = "
+                f"{total_table_width}px, but window is only {self.width}px wide.\n"
                 f"  Possible fixes:\n"
                 f"    - reduce num_departures_to_monitor (currently {self.num_departures_to_monitor})\n"
                 f"    - increase num_rows_per_table (currently {self.num_rows_per_table})\n"
                 f"    - reduce column widths in config\n"
-                f"    - reduce column_group_spacing (currently {self.column_group_spacing})\n"
                 f"    - increase window_width (currently {self.width})"
             )
 
@@ -534,6 +547,11 @@ class DVB_Monitor(QMainWindow):
         if not os.path.exists(self.css_file):
             errors.append(f"css_file '{self.css_file}' not found")
 
+        if self.use_backlight_control:
+            if not os.path.exists(self.backlight_path):
+                errors.append(f"backlight_path '{self.backlight_path}' not found. "
+                              f"Run: ls /sys/class/backlight/ to find correct path")
+
         # report errors and exit if any
         if errors:
             print(f"\n❌ Found {len(errors)} configuration error(s):\n")
@@ -541,10 +559,8 @@ class DVB_Monitor(QMainWindow):
                 print(f"  {i}. {e}\n")
             sys.exit(1)
 
-        if self.verbosity > 0:
-            print(f"✅ config OK: {num_cols_needed} column groups x {col_width_per_group}px "
-                  f"+ {num_cols_needed - 1} spacers x {self.column_group_spacing}px "
-                  f"= {total_table_width}px wide")
+        if self.verbosity>0:
+            print(f"✅ config OK: {num_cols_needed} column groups x {col_width_per_group}px = {total_table_width}px wide")
 
 
     def initUI(self):
@@ -605,6 +621,9 @@ class DVB_Monitor(QMainWindow):
             y_min         = self.touch_raw_y_min,
             y_max         = self.touch_raw_y_max,
         )
+
+        self.touch_filter.wake_callback = self.wake_if_sleeping
+        
         self.installEventFilter(self.touch_filter)
         self._install_filter_on_children()
 
@@ -761,6 +780,7 @@ class DVB_Monitor(QMainWindow):
         for ind, t in self.tables.items():
             t.clear()  # StopDisplay already has this method!
 
+        self.backlight_off()
         self.time_updated_widget.setText(f'Stale data cleared. Refresh to start again.')
 
 
@@ -796,6 +816,7 @@ class DVB_Monitor(QMainWindow):
 
 
     def refresh(self):
+        self.backlight_on()
         self.is_data_cleared = False
         self._refresh_all_departures()
         self._refresh_time()
@@ -900,6 +921,35 @@ class DVB_Monitor(QMainWindow):
                 grid_col = col_group * (num_cols_per_group + 1) + shift
 
                 table.set_cell(row, grid_col, f'{val}')
+
+    def backlight_on(self):
+        if self.use_backlight_control:
+            try:
+                with open(self.backlight_path, 'w') as f:
+                    f.write(str(self.backlight_max))
+                self.is_backlight_off = False
+            except Exception as e:
+                print(f"⚠️ could not turn backlight on: {e}")
+
+    def backlight_off(self):
+        if self.use_backlight_control:
+            try:
+                with open(self.backlight_path, 'w') as f:
+                    f.write('0')
+                self.is_backlight_off = True
+            except Exception as e:
+                print(f"⚠️ could not turn backlight off: {e}")
+
+    def wake_if_sleeping(self):
+        """
+        Called by TouchFilter on every touch.
+        Returns True if screen was off (touch should be blocked).
+        Returns False if screen was on (touch should be processed normally).
+        """
+        if self.use_backlight_control and self.is_backlight_off:
+            self.backlight_on()
+            return True   # was sleeping, block the touch
+        return False      # was on, process normally
 
 
 if __name__ == '__main__':
