@@ -29,12 +29,21 @@ DEFAULT_CONFIG = {
     "mock_update": False,
     "window_title": "DVB Local Stop Monitor",
     "num_departures_to_monitor":12,
-    "verbosity": 0
+    "verbosity": 0,
+
+    "columns": [
+        {"header": "#",    "width": 35,  "getter": "get_line",        "alignment": "center"},
+        {"header": "",     "width": 30,  "getter": "get_mode_emoji",  "alignment": "left"},
+        {"header": "Mins", "width": 30,  "getter": "get_minutes",     "alignment": "right"},
+        {"header": "Dest", "width": 140, "getter": "get_destination", "alignment": "left"},
+    ],
+
+    "is_full_screen": False,
+    "is_touch": False,
+    "touch_rotation": 270
     # there is no default dvb client name, i want my user to have to make the entry themselves, so they don't use my email address.
 }
 
-
-ROTATION = 90
 
 
 
@@ -52,7 +61,6 @@ mode_emoji = {
     'PlusBus': '🚎',
     'IntercityBus': '🚍'
 }
-
 
 
 
@@ -94,6 +102,26 @@ def get_minutes(departure):
 
     
     return minutes
+
+
+# Define all possible getter functions
+GETTER_REGISTRY = {
+    "get_line"        : get_line,
+    "get_mode_emoji"  : get_mode_emoji,
+    "get_line_w_mode" : get_line_w_mode,
+    "get_destination" : get_destination,
+    "get_minutes"     : get_minutes,
+}
+
+ALIGNMENT_REGISTRY = {
+    "left"   : Qt.AlignLeft    | Qt.AlignBottom,
+    "right"  : Qt.AlignRight   | Qt.AlignBottom,
+    "center" : Qt.AlignHCenter | Qt.AlignBottom,
+}
+
+
+
+
 
 
 
@@ -172,18 +200,19 @@ class DVB_Monitor(QMainWindow):
 
         self.setup_from_yaml()
 
-        # i don't know how to put these in the yaml, because they tie together functions and objects.
-        self.columns = [
-                        Column('#'   ,35,get_line,         Qt.AlignHCenter | Qt.AlignBottom),
-                        Column(''    ,30,get_mode_emoji,   Qt.AlignLeft | Qt.AlignBottom),
-                        Column('Mins',30,get_minutes,      Qt.AlignRight | Qt.AlignBottom),
-                        Column('Dest',140,get_destination, Qt.AlignLeft | Qt.AlignBottom),
-                        ]
-
         self.setup_internal_state()
         self.setup_dvb_client()
         self.initUI()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        # This runs after window is fully shown
+        geo = self.geometry()
+        frame = self.frameGeometry()
+        screen = QApplication.instance().primaryScreen().size()
+        print(f"Window geometry: {geo.x()}, {geo.y()}, {geo.width()}x{geo.height()}")
+        print(f"Frame geometry:  {frame.x()}, {frame.y()}, {frame.width()}x{frame.height()}")
+        print(f"Screen size:     {screen.width()}x{screen.height()}")
 
     def setup_internal_state(self):
 
@@ -264,12 +293,38 @@ class DVB_Monitor(QMainWindow):
         self.left = config["window_loc_x"]
         self.top = config["window_loc_y"]
 
+        # columns are already merged from DEFAULT_CONFIG + user yaml
+        self.columns = []
+        for col in config["columns"]:
+            getter_name = col["getter"]
+            alignment_name = col["alignment"]
+
+            if getter_name not in GETTER_REGISTRY:
+                raise RuntimeError(f"Unknown getter '{getter_name}' in config.yaml. "
+                                   f"Valid options: {list(GETTER_REGISTRY.keys())}")
+
+            if alignment_name not in ALIGNMENT_REGISTRY:
+                raise RuntimeError(f"Unknown alignment '{alignment_name}' in config.yaml. "
+                                   f"Valid options: {list(ALIGNMENT_REGISTRY.keys())}")
+
+            self.columns.append(Column(
+                header    = col["header"],
+                width     = col["width"],
+                getter    = GETTER_REGISTRY[getter_name],
+                alignment = ALIGNMENT_REGISTRY[alignment_name],
+            ))
+
+
         self.mock_update = config["mock_update"]
         self.title = config["window_title"]
 
         self.num_departures_to_monitor = config["num_departures_to_monitor"]
 
         self.verbosity = config["verbosity"]
+
+        self.is_full_screen = config["is_full_screen"]
+        self.is_touch = config["is_touch"]
+        self.touch_rotation = config["touch_rotation"]
 
         self.dvb_client_name = config["dvb_client_name"]  # there should be no default for this, because the user is supposed to give contact into in this strong.
         if not self.dvb_client_name:
@@ -285,6 +340,9 @@ class DVB_Monitor(QMainWindow):
         self.setGeometry(self.left, self.top, self.width, self.height)
         
         
+        if self.is_full_screen:
+            self.showFullScreen()
+            self.setWindowFlags(Qt.FramelessWindowHint)
 
         # Create central widget and layout
         central_widget = QWidget()
@@ -303,14 +361,15 @@ class DVB_Monitor(QMainWindow):
         self.setup_bottom()
         self.setup_timers()
         
-        self.setup_touch()
+        if self.is_touch:
+            self.setup_touch()
 
         self.auto_refresh() # kick it off!
 
 
     def setup_touch(self):
         # Install filter on the app - catches ALL events in ALL windows
-        self.touch_filter = TouchFilter(self.app, ROTATION, self.width, self.height)
+        self.touch_filter = TouchFilter(self.app, self.touch_rotation, self.width, self.height)
         self.installEventFilter(self.touch_filter)
 
         self._install_filter_on_children()

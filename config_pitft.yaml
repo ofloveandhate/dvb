@@ -1,7 +1,7 @@
 stops_to_monitor:
-  - Pirnaischerplatz
-  - Pragerstr
-  - Altmarkt
+ - Pirnaischerplatz
+ - Pragerstr
+ - Altmarkt
 
 row_height: 30                # pixels
 num_rows_per_table: 6         # make additional columns when departures exceed this
@@ -24,5 +24,27 @@ verbosity: 0
 window_title: "DVB Local Stop Monitor"
 num_departures_to_monitor: 12 
 
-dvb_client_name: "DVB Local Stop Monitor. silviana amethyst (amethyst@mpi-cbg.de)"
+is_touch: true
+touch_rotation: 270
+is_full_screen: true
 
+columns:
+  - header: "#"
+    width: 35
+    getter: get_line
+    alignment: center
+
+  # - header: ""
+  #   width: 30
+  #   getter: get_mode_emoji
+  #   alignment: left
+
+  - header: "Mins"
+    width: 30
+    getter: get_minutes
+    alignment: right
+
+  - header: "Dest"
+    width: 110
+    getter: get_destination
+    alignment: left
