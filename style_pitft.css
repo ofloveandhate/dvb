@@ -1,0 +1,46 @@
+QGroupBox{background-color: black;}
+QLabel.header{font-size: 27pt; color: white; background-color: blue;}
+QLabel.title{font-size: 24pt; color: white;}
+QLabel.haltestelle_header{font-size: 18pt; color: white;}
+
+QLabel.body{font-size: 23pt; color: white;}
+QLabel.footer{font-size: 8pt; color: white;}
+
+
+QLabel[class="grid_header"] {
+    font-weight: bold;
+    background-color: #333333;
+    color: white;
+    border: 1px solid #555555;
+    padding: 2px;
+}
+
+QLabel[class="grid_cell"] {
+    background-color: #1a1a1a;
+    color: #ffffff;
+    border: 1px solid #2a2a2a;
+    padding: 2px;
+}
+
+QLabel[class="haltestelle_header"] {
+    font-size: 16px;
+    font-weight: bold;
+    color: yellow;
+}
+
+
+QTableWidget::item:selected {
+
+}
+
+QTableWidget::item:hover {
+
+}
+
+QHeaderView::section {
+
+}
+
+QTableWidget::corner {
+
+}

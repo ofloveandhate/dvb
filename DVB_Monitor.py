@@ -15,7 +15,7 @@ from collections import namedtuple
 import numpy as np # for infinity
 
 
-
+import os
 
 DEFAULT_CONFIG = {
     "stops_to_monitor": ["Altmarkt"],
@@ -51,6 +51,8 @@ DEFAULT_CONFIG = {
     "touch_raw_x_max": 434,
     "touch_raw_y_min": 22,
     "touch_raw_y_max": 287,
+
+    "css_file": "style.css",
 
     # there is no default dvb client name, i want my user to have to make the entry themselves, so they don't use my email address.
 }
@@ -438,12 +440,14 @@ class DVB_Monitor(QMainWindow):
         self.is_full_screen = config["is_full_screen"]
         self.is_touch = config["is_touch"]
         self.touch_rotation = config["touch_rotation"]
-        
+
         self.is_touch_calibrated = config["is_touch_calibrated"]
         self.touch_raw_x_min     = config["touch_raw_x_min"]
         self.touch_raw_x_max     = config["touch_raw_x_max"]
         self.touch_raw_y_min     = config["touch_raw_y_min"]
         self.touch_raw_y_max     = config["touch_raw_y_max"]
+
+        self.css_file = config["css_file"]
 
         self.dvb_client_name = config["dvb_client_name"]  # there should be no default for this, because the user is supposed to give contact into in this strong.
         if not self.dvb_client_name:
@@ -510,6 +514,10 @@ class DVB_Monitor(QMainWindow):
         for w in warnings:
             print(f"⚠️  WARNING: {w}")
 
+        # check css file exists
+        if not os.path.exists(self.css_file):
+            errors.append(f"css_file '{self.css_file}' not found")
+
         # report errors and exit if any
         if errors:
             print(f"\n❌ Found {len(errors)} configuration error(s):\n")
@@ -527,6 +535,10 @@ class DVB_Monitor(QMainWindow):
         self.setGeometry(self.left, self.top, self.width, self.height)
         
         
+        with open(self.css_file, 'r') as f:
+            self.app.setStyleSheet(f.read())
+
+
         if self.is_full_screen:
             self.showFullScreen()
             self.setWindowFlags(Qt.FramelessWindowHint)
@@ -872,7 +884,6 @@ class DVB_Monitor(QMainWindow):
 
 
 if __name__ == '__main__':
-
     parser = argparse.ArgumentParser(description='DVB Monitor')
     parser.add_argument(
         '--config',
@@ -881,15 +892,7 @@ if __name__ == '__main__':
     )
     args = parser.parse_args()
 
-
-
     app = QApplication(sys.argv)
-
-
-
-
-    with open("style.css",'r') as f:
-        app.setStyleSheet(f.read())
 
     ex = DVB_Monitor(app, config_path=args.config)
     sys.exit(app.exec_())
