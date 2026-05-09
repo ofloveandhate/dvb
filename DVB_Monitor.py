@@ -303,7 +303,9 @@ class DVB_Monitor(QMainWindow):
 
         self.num_cols_per_col = len(self.columns)  # because each departure gets this many, and we use multiple cols of departures
 
-        self.num_cols_needed = self.num_departures_to_monitor // self.num_rows_per_table
+        import math
+        self.num_cols_needed = math.ceil(self.num_departures_to_monitor / self.num_rows_per_table)
+        
         self.is_nav_needed = len(self.stops_to_monitor) > self.num_stops_per_page
         self.is_nav_needed_prev = len(self.stops_to_monitor) > self.num_stops_per_page
         self.is_nav_needed_next = len(self.stops_to_monitor) > self.num_stops_per_page + 1
