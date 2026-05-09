@@ -41,6 +41,8 @@ DEFAULT_CONFIG = {
         {"header": "Dest", "width": 140, "getter": "get_destination", "alignment": "left", "margin_right": 0, "elide": True},
     ],
 
+    "column_group_spacing": 20,
+
     "is_full_screen": False,
     "is_touch": False,
     "touch_rotation": 270,
@@ -226,43 +228,40 @@ class TouchFilter(QObject):
 
 
 class StopDisplay(QWidget):
-    """Replaces QTableWidget for one stop"""
-    
-    def __init__(self, columns, num_rows, num_cols_needed, row_height):
+    def __init__(self, columns, num_rows, num_cols_needed, row_height, column_group_spacing=0):
         super().__init__()
-        self.columns = columns
-        self.num_rows = num_rows
-        self.num_cols_needed = num_cols_needed
-        self.row_height = row_height
-        self.labels = {}  # keyed by (row, col)
-        
+        self.columns              = columns
+        self.num_rows             = num_rows
+        self.num_cols_needed      = num_cols_needed
+        self.row_height           = row_height
+        self.column_group_spacing = column_group_spacing
+        self.labels               = {}
+
         self.grid = QGridLayout()
         self.grid.setSpacing(0)
-        self.grid.setHorizontalSpacing(0)  # ADD THIS
-        self.grid.setVerticalSpacing(0)    # ADD THIS
+        self.grid.setHorizontalSpacing(0)
+        self.grid.setVerticalSpacing(0)
         self.grid.setContentsMargins(0, 0, 0, 0)
         self.setLayout(self.grid)
-        
-        self._build_grid()
-    
-    def _build_grid(self):
 
+        self._build_grid()
+
+    def _build_grid(self):
         num_cols_per_group = len(self.columns)
         total_w = sum(col.width + col.margin_right for col in self.columns) * self.num_cols_needed
+        total_w += self.column_group_spacing * (self.num_cols_needed - 1)
         self.setFixedWidth(total_w)
-        
-        num_cols_per_group = len(self.columns)
+
+        grid_col = 0  # track grid column manually
 
         for col_group in range(self.num_cols_needed):
             for col_ind, col in enumerate(self.columns):
-                grid_col = col_group * num_cols_per_group + col_ind
 
                 # header
                 header = ElidedLabel(col.header) if col.elide else QLabel(col.header)
                 header.setAlignment(Qt.AlignCenter)
                 header.setFixedSize(col.width, self.row_height)
                 header.setProperty('class', 'grid_header')
-                header.setContentsMargins(0, 0, col.margin_right, 0)
                 self.grid.addWidget(header, 0, grid_col)
 
                 # data rows
@@ -271,27 +270,34 @@ class StopDisplay(QWidget):
                     label.setAlignment(col.alignment)
                     label.setFixedSize(col.width, self.row_height)
                     label.setProperty('class', 'grid_cell')
-                    label.setContentsMargins(0, 0, col.margin_right, 0)
                     self.grid.addWidget(label, row + 1, grid_col)
                     self.labels[(row, grid_col)] = label
-    
+
+                grid_col += 1
+
+            # insert a spacer column between groups (not after the last one)
+            is_last_group = (col_group == self.num_cols_needed - 1)
+            if not is_last_group and self.column_group_spacing > 0:
+                for row in range(self.num_rows + 1):  # +1 for header
+                    spacer = QWidget()
+                    spacer.setFixedSize(self.column_group_spacing, self.row_height)
+                    self.grid.addWidget(spacer, row, grid_col)
+                grid_col += 1
+
     def set_cell(self, row, col, text):
-        """Set text of a cell"""
         if (row, col) in self.labels:
             self.labels[(row, col)].setText(text)
-    
+
     def clear(self):
-        """Clear all cells"""
         for label in self.labels.values():
             label.setText('')
-    
-    def set_cell_style(self, row, col, style_class):
-        """Change styling of a cell"""
-        if (row, col) in self.labels:
-            self.labels[(row, col)].setProperty('class', style_class)
-            self.labels[(row, col)].style().unpolish(self.labels[(row, col)])
-            self.labels[(row, col)].style().polish(self.labels[(row, col)])
 
+    def set_cell_style(self, row, col, style_class):
+        if (row, col) in self.labels:
+            w = self.labels[(row, col)]
+            w.setProperty('class', style_class)
+            w.style().unpolish(w)
+            w.style().polish(w)
 
 
 # lets us truncate certain columns
@@ -436,6 +442,7 @@ class DVB_Monitor(QMainWindow):
                 elide       = col.get("elide", False),  # default to False
             ))
 
+        self.column_group_spacing = config["column_group_spacing"]
 
         self.mock_update = config["mock_update"]
         self.title = config["window_title"]
@@ -618,6 +625,7 @@ class DVB_Monitor(QMainWindow):
                 num_rows       = self.num_rows_per_table,
                 num_cols_needed= self.num_cols_needed,
                 row_height     = self.row_height,
+                column_group_spacing = self.column_group_spacing,
             )
 
             self.header_widgets[ii] = QLabel()
@@ -862,31 +870,31 @@ class DVB_Monitor(QMainWindow):
 
 
     def rebuild_table(self, stop_ind):
-        """
-        re-paint the data into the table.  assumes the data is already refreshed.  
-        this uses the existing data in the map self.departures
-        """
-
         if stop_ind >= len(self.stops_to_monitor):
             return
 
         table_ind = stop_ind % self.num_stops_per_page
-        table = self.tables[table_ind]  # now a StopDisplay
-        
+        table = self.tables[table_ind]
         stop_name = self.stops_to_monitor[stop_ind]
         self.header_widgets[table_ind].setText(stop_name)
 
-        table.clear()  # clear old data
+        table.clear()
 
         departures = self.departures[stop_name]
 
+        num_cols_per_group = len(self.columns)
+
         for ii, departure in enumerate(departures[:self.num_departures_to_monitor]):
-            row = ii % self.num_rows_per_table
+            row       = ii % self.num_rows_per_table
             col_group = ii // self.num_rows_per_table
-            
+
             for shift, c in enumerate(self.columns):
                 val = c.getter(departure)
-                grid_col = col_group * len(self.columns) + shift
+
+                # account for spacer columns between groups
+                # each group is num_cols_per_group wide, plus 1 spacer column after it
+                grid_col = col_group * (num_cols_per_group + 1) + shift
+
                 table.set_cell(row, grid_col, f'{val}')
 
 
