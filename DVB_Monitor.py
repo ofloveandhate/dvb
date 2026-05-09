@@ -477,18 +477,20 @@ class DVB_Monitor(QMainWindow):
 
         # compute total column width
         col_width_per_group = sum(col.width + col.margin_right for col in self.columns)
-        num_cols_needed = math.ceil(self.num_departures_to_monitor / self.num_rows_per_table)
-        total_table_width = col_width_per_group * num_cols_needed
+        num_cols_needed     = math.ceil(self.num_departures_to_monitor / self.num_rows_per_table)
+        total_table_width   = (col_width_per_group * num_cols_needed) + (self.column_group_spacing * (num_cols_needed - 1))
 
         # check table fits in window
         if total_table_width > self.width:
             errors.append(
-                f"Table is too wide: {num_cols_needed} column groups x {col_width_per_group}px = "
-                f"{total_table_width}px, but window is only {self.width}px wide.\n"
+                f"Table is too wide: {num_cols_needed} column groups x {col_width_per_group}px "
+                f"+ {num_cols_needed - 1} spacers x {self.column_group_spacing}px "
+                f"= {total_table_width}px, but window is only {self.width}px wide.\n"
                 f"  Possible fixes:\n"
                 f"    - reduce num_departures_to_monitor (currently {self.num_departures_to_monitor})\n"
                 f"    - increase num_rows_per_table (currently {self.num_rows_per_table})\n"
                 f"    - reduce column widths in config\n"
+                f"    - reduce column_group_spacing (currently {self.column_group_spacing})\n"
                 f"    - increase window_width (currently {self.width})"
             )
 
