@@ -3,16 +3,19 @@ from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QHBoxLayout, QGroupBo
 from PyQt5.QtGui import QIcon, QKeySequence
 from PyQt5.QtCore import pyqtSlot, QTimer
 from PyQt5.QtCore import Qt
+
+from PyQt5.QtGui import QPainter, QFontMetrics
+
 import dvb
 from datetime import datetime, timezone, timedelta
 
-
+import argparse
 from collections import namedtuple
 
 import numpy as np # for infinity
 
 
-
+import os
 
 DEFAULT_CONFIG = {
     "stops_to_monitor": ["Altmarkt"],
@@ -29,11 +32,34 @@ DEFAULT_CONFIG = {
     "mock_update": False,
     "window_title": "DVB Local Stop Monitor",
     "num_departures_to_monitor":12,
-    "verbosity": 0
+    "verbosity": 0,
+
+    "columns": [
+        {"header": "#",    "width": 35,  "getter": "get_line",        "alignment": "center", "margin_right": 0, "elide": False},
+        {"header": "",     "width": 30,  "getter": "get_mode_emoji",  "alignment": "left", "margin_right": 0, "elide": False},
+        {"header": "Mins", "width": 30,  "getter": "get_minutes",     "alignment": "right", "margin_right": 0, "elide": False},
+        {"header": "Dest", "width": 140, "getter": "get_destination", "alignment": "left", "margin_right": 0, "elide": True},
+    ],
+
+    "column_group_spacing": 20,
+
+    "is_full_screen": False,
+    "is_touch": False,
+    "touch_rotation": 270,
+    "is_touch_calibrated": False,
+    "touch_raw_x_min": 46,
+    "touch_raw_x_max": 434,
+    "touch_raw_y_min": 22,
+    "touch_raw_y_max": 287,
+
+    "backlight_path":        "/sys/class/backlight/soc:backlight/brightness",
+    "backlight_max":         1,    # ADD THIS so it's configurable
+    "use_backlight_control": False,
+
+    "css_file": "style.css",
+
     # there is no default dvb client name, i want my user to have to make the entry themselves, so they don't use my email address.
 }
-
-
 
 
 
@@ -49,13 +75,13 @@ occupancy_emoji = {
 mode_emoji = {
     'Tram': '🚋',
     'CityBus': '🚌',
-    'PlusBus': '🚎'
+    'PlusBus': '🚎',
+    'IntercityBus': '🚍'
 }
 
 
 
-
-Column = namedtuple("Column", ["header","width","getter", "alignment"])
+Column = namedtuple("Column", ["header", "width", "getter", "alignment", "margin_right", "elide"])
 
 def get_line(departure):
     return departure.line
@@ -95,26 +121,232 @@ def get_minutes(departure):
     return minutes
 
 
+# Define all possible getter functions
+GETTER_REGISTRY = {
+    "get_line"        : get_line,
+    "get_mode_emoji"  : get_mode_emoji,
+    "get_line_w_mode" : get_line_w_mode,
+    "get_destination" : get_destination,
+    "get_minutes"     : get_minutes,
+}
+
+ALIGNMENT_REGISTRY = {
+    "left"   : Qt.AlignLeft    | Qt.AlignBottom,
+    "right"  : Qt.AlignRight   | Qt.AlignBottom,
+    "center" : Qt.AlignHCenter | Qt.AlignBottom,
+}
+
+
+
+
+
+
+
+
+from PyQt5.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout
+from PyQt5.QtCore import QObject, QEvent, Qt
+from PyQt5.QtGui import QMouseEvent, QCursor
+from PyQt5.QtCore import QObject, QEvent, QPoint, Qt
+
+def transform_coords(x, y, rotation, w, h):
+    if rotation == 90:
+        return y, w - x
+    elif rotation == 180:
+        return w - x, h - y
+    elif rotation == 270:
+        return h - y, x
+    else:
+        return x, y
+
+def transform_coords_calibrated(x, y, w, h, x_min, x_max, y_min, y_max):
+    nx = (x - x_min) / (x_max - x_min)
+    ny = (y - y_min) / (y_max - y_min)
+    screen_x = int((1.0 - ny) * w)
+    screen_y = int(nx * h)
+    return screen_x, screen_y
+
+
+class TouchFilter(QObject):
+    def __init__(self, app, ROTATION, SCREEN_W, SCREEN_H,
+                 is_calibrated=False,
+                 x_min=0, x_max=1, y_min=0, y_max=1):
+        super().__init__()
+        self.app           = app
+        self.ROTATION      = ROTATION
+        self.SCREEN_W      = SCREEN_W
+        self.SCREEN_H      = SCREEN_H
+        self.processing    = False
+        self.is_calibrated = is_calibrated
+        self.x_min         = x_min
+        self.x_max         = x_max
+        self.y_min         = y_min
+        self.y_max         = y_max
+        self.wake_callback = None  # set this to backlight_on function
+
+    def _transform(self, x, y):
+        if self.is_calibrated:
+            return transform_coords_calibrated(
+                x, y,
+                self.SCREEN_W, self.SCREEN_H,
+                self.x_min, self.x_max,
+                self.y_min, self.y_max,
+            )
+        else:
+            return transform_coords(x, y, self.ROTATION, self.SCREEN_W, self.SCREEN_H)
+
+    def eventFilter(self, obj, event):
+        if self.processing:
+            return False
+
+        if event.type() in (
+            QEvent.MouseButtonPress,
+            QEvent.MouseButtonRelease,
+            QEvent.MouseMove,
+        ):
+            # if screen is off, any touch just wakes it up and blocks the event
+            if self.wake_callback and self.wake_callback():
+                return True  # block the event, just wake
+
+            raw_x = event.globalPos().x()
+            raw_y = event.globalPos().y()
+            new_x, new_y = self._transform(raw_x, raw_y)
+
+            target = self.app.widgetAt(new_x, new_y)
+            if target is None:
+                return True
+
+            local_pos = target.mapFromGlobal(QPoint(new_x, new_y))
+
+            new_event = QMouseEvent(
+                event.type(),
+                local_pos,
+                QPoint(new_x, new_y),
+                event.button(),
+                event.buttons(),
+                event.modifiers(),
+            )
+
+            self.processing = True
+            self.app.sendEvent(target, new_event)
+            self.processing = False
+            return True
+
+        return False
+
+
+class StopDisplay(QWidget):
+    def __init__(self, columns, num_rows, num_cols_needed, row_height, column_group_spacing=0):
+        super().__init__()
+        self.columns              = columns
+        self.num_rows             = num_rows
+        self.num_cols_needed      = num_cols_needed
+        self.row_height           = row_height
+        self.column_group_spacing = column_group_spacing
+        self.labels               = {}
+
+        self.grid = QGridLayout()
+        self.grid.setSpacing(0)
+        self.grid.setHorizontalSpacing(0)
+        self.grid.setVerticalSpacing(0)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.setLayout(self.grid)
+
+        self._build_grid()
+
+    def _build_grid(self):
+        num_cols_per_group = len(self.columns)
+        total_w = sum(col.width + col.margin_right for col in self.columns) * self.num_cols_needed
+        total_w += self.column_group_spacing * (self.num_cols_needed - 1)
+        self.setFixedWidth(total_w)
+
+        grid_col = 0  # track grid column manually
+
+        for col_group in range(self.num_cols_needed):
+            for col_ind, col in enumerate(self.columns):
+
+                # header
+                header = ElidedLabel(col.header) if col.elide else QLabel(col.header)
+                header.setAlignment(Qt.AlignCenter)
+                header.setFixedSize(col.width, self.row_height)
+                header.setProperty('class', 'grid_header')
+                self.grid.addWidget(header, 0, grid_col)
+
+                # data rows
+                for row in range(self.num_rows):
+                    label = ElidedLabel('?') if col.elide else QLabel('?')
+                    label.setAlignment(col.alignment)
+                    label.setFixedSize(col.width, self.row_height)
+                    label.setProperty('class', 'grid_cell')
+                    self.grid.addWidget(label, row + 1, grid_col)
+                    self.labels[(row, grid_col)] = label
+
+                grid_col += 1
+
+            # insert a spacer column between groups (not after the last one)
+            is_last_group = (col_group == self.num_cols_needed - 1)
+            if not is_last_group and self.column_group_spacing > 0:
+                for row in range(self.num_rows + 1):  # +1 for header
+                    spacer = QWidget()
+                    spacer.setFixedSize(self.column_group_spacing, self.row_height)
+                    self.grid.addWidget(spacer, row, grid_col)
+                grid_col += 1
+
+    def set_cell(self, row, col, text):
+        if (row, col) in self.labels:
+            self.labels[(row, col)].setText(text)
+
+    def clear(self):
+        for label in self.labels.values():
+            label.setText('')
+
+    def set_cell_style(self, row, col, style_class):
+        if (row, col) in self.labels:
+            w = self.labels[(row, col)]
+            w.setProperty('class', style_class)
+            w.style().unpolish(w)
+            w.style().polish(w)
+
+
+# lets us truncate certain columns
+class ElidedLabel(QLabel):
+    def __init__(self, text='', parent=None):
+        super().__init__(text, parent)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        metrics = QFontMetrics(self.font())
+        elided = metrics.elidedText(self.text(), Qt.ElideRight, self.width())
+        painter.drawText(self.rect(), self.alignment(), elided)
+
+
+
+
 
 class DVB_Monitor(QMainWindow):
 
-    def __init__(self):
+    def __init__(self, app, config_path):
         super().__init__()
 
-        self.setup_from_yaml()
+        self.app = app
 
-        # i don't know how to put these in the yaml, because they tie together functions and objects.
-        self.columns = [
-                        Column('#'   ,35,get_line,         Qt.AlignHCenter | Qt.AlignBottom),
-                        Column(''    ,30,get_mode_emoji,   Qt.AlignLeft | Qt.AlignBottom),
-                        Column('Mins',30,get_minutes,      Qt.AlignRight | Qt.AlignBottom),
-                        Column('Dest',140,get_destination, Qt.AlignLeft | Qt.AlignBottom),
-                        ]
+        self.setup_from_yaml(path=config_path)
 
         self.setup_internal_state()
+
+        self.validate_config()                   # check everything is sane
+
         self.setup_dvb_client()
         self.initUI()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        # This runs after window is fully shown
+        geo = self.geometry()
+        frame = self.frameGeometry()
+        screen = QApplication.instance().primaryScreen().size()
+        print(f"Window geometry: {geo.x()}, {geo.y()}, {geo.width()}x{geo.height()}")
+        print(f"Frame geometry:  {frame.x()}, {frame.y()}, {frame.width()}x{frame.height()}")
+        print(f"Screen size:     {screen.width()}x{screen.height()}")
 
     def setup_internal_state(self):
 
@@ -126,6 +358,7 @@ class DVB_Monitor(QMainWindow):
         self.num_consecutive_autorefreshes = 0
         self.is_data_cleared = True
 
+        self.is_backlight_off = False
 
         #############
         #  internal variables for holding Qt objects
@@ -143,7 +376,9 @@ class DVB_Monitor(QMainWindow):
 
         self.num_cols_per_col = len(self.columns)  # because each departure gets this many, and we use multiple cols of departures
 
-        self.num_cols_needed = self.num_departures_to_monitor // self.num_rows_per_table
+        import math
+        self.num_cols_needed = math.ceil(self.num_departures_to_monitor / self.num_rows_per_table)
+
         self.is_nav_needed = len(self.stops_to_monitor) > self.num_stops_per_page
         self.is_nav_needed_prev = len(self.stops_to_monitor) > self.num_stops_per_page
         self.is_nav_needed_next = len(self.stops_to_monitor) > self.num_stops_per_page + 1
@@ -156,7 +391,7 @@ class DVB_Monitor(QMainWindow):
         self.client = dvb.Client(user_agent=self.dvb_client_name)
 
 
-    def setup_from_yaml(self, path="config.yaml"):
+    def setup_from_yaml(self, path):
         import yaml # pip install pyyaml
 
         def load_config(path):
@@ -195,12 +430,53 @@ class DVB_Monitor(QMainWindow):
         self.left = config["window_loc_x"]
         self.top = config["window_loc_y"]
 
+        # columns are already merged from DEFAULT_CONFIG + user yaml
+        self.columns = []
+        for col in config["columns"]:
+            getter_name = col["getter"]
+            alignment_name = col["alignment"]
+
+            if getter_name not in GETTER_REGISTRY:
+                raise RuntimeError(f"Unknown getter '{getter_name}' in config.yaml. "
+                                   f"Valid options: {list(GETTER_REGISTRY.keys())}")
+
+            if alignment_name not in ALIGNMENT_REGISTRY:
+                raise RuntimeError(f"Unknown alignment '{alignment_name}' in config.yaml. "
+                                   f"Valid options: {list(ALIGNMENT_REGISTRY.keys())}")
+
+            self.columns.append(Column(
+                header      = col["header"],
+                width       = col["width"],
+                getter      = GETTER_REGISTRY[getter_name],
+                alignment   = ALIGNMENT_REGISTRY[alignment_name],
+                margin_right= col.get("margin_right", 0),
+                elide       = col.get("elide", False),  # default to False
+            ))
+
+        self.column_group_spacing = config["column_group_spacing"]
+
         self.mock_update = config["mock_update"]
         self.title = config["window_title"]
 
         self.num_departures_to_monitor = config["num_departures_to_monitor"]
 
         self.verbosity = config["verbosity"]
+
+        self.is_full_screen = config["is_full_screen"]
+        self.is_touch = config["is_touch"]
+        self.touch_rotation = config["touch_rotation"]
+
+        self.is_touch_calibrated = config["is_touch_calibrated"]
+        self.touch_raw_x_min     = config["touch_raw_x_min"]
+        self.touch_raw_x_max     = config["touch_raw_x_max"]
+        self.touch_raw_y_min     = config["touch_raw_y_min"]
+        self.touch_raw_y_max     = config["touch_raw_y_max"]
+
+        self.backlight_path        = config["backlight_path"]
+        self.backlight_max         = config["backlight_max"]
+        self.use_backlight_control = config["use_backlight_control"]
+
+        self.css_file = config["css_file"]
 
         self.dvb_client_name = config["dvb_client_name"]  # there should be no default for this, because the user is supposed to give contact into in this strong.
         if not self.dvb_client_name:
@@ -209,12 +485,98 @@ class DVB_Monitor(QMainWindow):
         if self.mock_update:
             print('ℹ️ `mock_update` is set to true, which is good for development, but bad for actual use.  set to false so it actually updates data')
 
+    def validate_config(self):
+        import math
+        errors = []
+        warnings = []
+
+        # compute total column width
+        col_width_per_group = sum(col.width + col.margin_right for col in self.columns)
+        num_cols_needed = math.ceil(self.num_departures_to_monitor / self.num_rows_per_table)
+        total_table_width = col_width_per_group * num_cols_needed
+
+        # check table fits in window
+        if total_table_width > self.width:
+            errors.append(
+                f"Table is too wide: {num_cols_needed} column groups x {col_width_per_group}px = "
+                f"{total_table_width}px, but window is only {self.width}px wide.\n"
+                f"  Possible fixes:\n"
+                f"    - reduce num_departures_to_monitor (currently {self.num_departures_to_monitor})\n"
+                f"    - increase num_rows_per_table (currently {self.num_rows_per_table})\n"
+                f"    - reduce column widths in config\n"
+                f"    - increase window_width (currently {self.width})"
+            )
+
+        # check table fits vertically
+        total_table_height = self.row_height * (self.num_rows_per_table + 1)  # +1 for header
+        if total_table_height > self.height:
+            errors.append(
+                f"Table is too tall: {self.num_rows_per_table} rows x {self.row_height}px = "
+                f"{total_table_height}px, but window is only {self.height}px tall.\n"
+                f"  Possible fixes:\n"
+                f"    - reduce num_rows_per_table (currently {self.num_rows_per_table})\n"
+                f"    - reduce row_height (currently {self.row_height})\n"
+                f"    - increase window_height (currently {self.height})"
+            )
+
+        # check num_departures_to_monitor is sensible
+        if self.num_departures_to_monitor < 1:
+            errors.append(f"num_departures_to_monitor must be at least 1, got {self.num_departures_to_monitor}")
+
+        # check num_rows_per_table is sensible
+        if self.num_rows_per_table < 1:
+            errors.append(f"num_rows_per_table must be at least 1, got {self.num_rows_per_table}")
+
+        # check refresh interval
+        if self.refresh_interval < 10:
+            warnings.append(f"refresh_interval is {self.refresh_interval}s which is very fast, DVB api may rate limit you")
+
+        # check stops list
+        if not self.stops_to_monitor:
+            errors.append("stops_to_monitor is empty, add at least one stop")
+
+        # check window size is sensible
+        if self.width < 100 or self.height < 100:
+            errors.append(f"window size {self.width}x{self.height} seems too small")
+
+        # report warnings
+        for w in warnings:
+            print(f"⚠️  WARNING: {w}")
+
+        # check css file exists
+        if not os.path.exists(self.css_file):
+            errors.append(f"css_file '{self.css_file}' not found")
+
+        if self.use_backlight_control:
+            if not os.path.exists(self.backlight_path):
+                errors.append(f"backlight_path '{self.backlight_path}' not found. "
+                              f"Run: ls /sys/class/backlight/ to find correct path")
+
+        # report errors and exit if any
+        if errors:
+            print(f"\n❌ Found {len(errors)} configuration error(s):\n")
+            for i, e in enumerate(errors, 1):
+                print(f"  {i}. {e}\n")
+            sys.exit(1)
+
+        if self.verbosity>0:
+            print(f"✅ config OK: {num_cols_needed} column groups x {col_width_per_group}px = {total_table_width}px wide")
+
 
     def initUI(self):
 
         self.setWindowTitle(self.title)
         self.setGeometry(self.left, self.top, self.width, self.height)
         
+        
+        with open(self.css_file, 'r') as f:
+            self.app.setStyleSheet(f.read())
+
+
+        if self.is_full_screen:
+            self.showFullScreen()
+            self.setWindowFlags(Qt.FramelessWindowHint)
+
         # Create central widget and layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -224,6 +586,15 @@ class DVB_Monitor(QMainWindow):
         self.escape_shortcut.activated.connect(QApplication.quit)
         print('ℹ️ press escape to close window (when it has focus)')
 
+        self.shortcut_prev = QShortcut(QKeySequence(Qt.Key_Left), self)
+        self.shortcut_prev.activated.connect(lambda: self.change_page(-1))
+
+        self.shortcut_next = QShortcut(QKeySequence(Qt.Key_Right), self)
+        self.shortcut_next.activated.connect(lambda: self.change_page(+1))
+
+        self.shortcut_refresh = QShortcut(QKeySequence(Qt.Key_Up), self)
+        self.shortcut_refresh.activated.connect(self.manual_refresh)
+
         self.main_layout = QVBoxLayout(central_widget)
         self.main_layout.setContentsMargins(0, 0, 0, 0)  # This removes padding around the layout
         self.setLayout(self.main_layout)
@@ -232,27 +603,53 @@ class DVB_Monitor(QMainWindow):
         self.setup_bottom()
         self.setup_timers()
         
+        if self.is_touch:
+            self.setup_touch()
+
         self.auto_refresh() # kick it off!
 
 
-    def init_tables(self):
+    def setup_touch(self):
+        self.touch_filter = TouchFilter(
+            self.app,
+            self.touch_rotation,
+            self.width,
+            self.height,
+            is_calibrated = self.is_touch_calibrated,
+            x_min         = self.touch_raw_x_min,
+            x_max         = self.touch_raw_x_max,
+            y_min         = self.touch_raw_y_min,
+            y_max         = self.touch_raw_y_max,
+        )
+
+        self.touch_filter.wake_callback = self.wake_if_sleeping
         
-        # make a new layout to hold this
+        self.installEventFilter(self.touch_filter)
+        self._install_filter_on_children()
+
+    def _install_filter_on_children(self):
+        # Install on every child widget recursively
+        for widget in self.findChildren(QWidget):
+            widget.installEventFilter(self.touch_filter)
+
+    def init_tables(self):
         self.tables_layout = QHBoxLayout()
-
-        # make the tables 
         self.tables = {}
-
-        # m
         self.layout_per_haltestelle = {}
         self.header_widgets = {}
 
-        for ii in range( min(self.num_stops_per_page, len(self.stops_to_monitor))):
+        for ii in range(min(self.num_stops_per_page, len(self.stops_to_monitor))):
+            self.layout_per_haltestelle[ii] = QVBoxLayout()
+            this_layout = self.layout_per_haltestelle[ii]
 
-            self.layout_per_haltestelle[ii] = QVBoxLayout() # make and store
-            this_layout = self.layout_per_haltestelle[ii] # unpack
-
-            self.setup_table(ii)
+            # create StopDisplay instead of QTableWidget
+            self.tables[ii] = StopDisplay(
+                columns        = self.columns,
+                num_rows       = self.num_rows_per_table,
+                num_cols_needed= self.num_cols_needed,
+                row_height     = self.row_height,
+                column_group_spacing = self.column_group_spacing,
+            )
 
             self.header_widgets[ii] = QLabel()
             w = self.header_widgets[ii]
@@ -261,7 +658,6 @@ class DVB_Monitor(QMainWindow):
 
             this_layout.addWidget(w)
             this_layout.addWidget(self.tables[ii])
-
             self.tables_layout.addLayout(this_layout)
 
         self.main_layout.addLayout(self.tables_layout)
@@ -375,20 +771,17 @@ class DVB_Monitor(QMainWindow):
 
 
     def clear_stale_data(self):
-        if self.verbosity>=1:
+        if self.verbosity >= 1:
             print('clearing stale data, waiting for refresh button push.')
 
         self.is_data_cleared = True
         self.departures = {}
 
-        for ind,t in self.tables.items():
-            for row in range(t.rowCount()):
-                for col in range(t.columnCount()):
-                    item = t.item(row, col)
-                    if item is not None:
-                        item.setText("")
+        for ind, t in self.tables.items():
+            t.clear()  # StopDisplay already has this method!
 
-        self.time_updated_widget.setText(f'Stale data cleared.  Refresh to start again.')
+        self.backlight_off()
+        self.time_updated_widget.setText(f'Stale data cleared. Refresh to start again.')
 
 
     def auto_refresh(self):
@@ -423,6 +816,7 @@ class DVB_Monitor(QMainWindow):
 
 
     def refresh(self):
+        self.backlight_on()
         self.is_data_cleared = False
         self._refresh_all_departures()
         self._refresh_time()
@@ -501,49 +895,112 @@ class DVB_Monitor(QMainWindow):
 
 
     def rebuild_table(self, stop_ind):
-        """
-        re-paint the data into the table.  assumes the data is already refreshed.  
-        this uses the existing data in the map self.departures
-        """
-
         if stop_ind >= len(self.stops_to_monitor):
             return
 
         table_ind = stop_ind % self.num_stops_per_page
-
-        # unpack to make shorter
         table = self.tables[table_ind]
-
         stop_name = self.stops_to_monitor[stop_ind]
+        self.header_widgets[table_ind].setText(stop_name)
 
-        w = self.header_widgets[table_ind]
-        w.setText(stop_name)
+        table.clear()
+
+        departures = self.departures[stop_name]
+
+        num_cols_per_group = len(self.columns)
+
+        for ii, departure in enumerate(departures[:self.num_departures_to_monitor]):
+            row       = ii % self.num_rows_per_table
+            col_group = ii // self.num_rows_per_table
+
+            for shift, c in enumerate(self.columns):
+                val = c.getter(departure)
+
+                # account for spacer columns between groups
+                # each group is num_cols_per_group wide, plus 1 spacer column after it
+                grid_col = col_group * (num_cols_per_group + 1) + shift
+
+                table.set_cell(row, grid_col, f'{val}')
+
+    def backlight_on(self):
+        if self.use_backlight_control:
+            try:
+                with open(self.backlight_path, 'w') as f:
+                    f.write(str(self.backlight_max))
+                self.is_backlight_off = False
+            except Exception as e:
+                print(f"⚠️ could not turn backlight on: {e}")
+
+    def backlight_off(self):
+        if self.use_backlight_control:
+            try:
+                with open(self.backlight_path, 'w') as f:
+                    f.write('0')
+                self.is_backlight_off = True
+            except Exception as e:
+                print(f"⚠️ could not turn backlight off: {e}")
+
+    def wake_if_sleeping(self):
+        """
+        Called by TouchFilter on every touch.
+        Returns True if screen was off (touch should be blocked).
+        Returns False if screen was on (touch should be processed normally).
+        """
+        if self.use_backlight_control and self.is_backlight_off:
+            self.backlight_on()
+            return True   # was sleeping, block the touch
+        return False      # was on, process normally
 
 
-        departures = self.departures[stop_name] # unpack to make shorter
+def generate_default_config(path):
+    import yaml
 
-        # now we set the data in the tables from the departure list
-        for ii,departure in enumerate(departures[:self.num_departures_to_monitor]):
+    # make a copy without the dvb_client_name so user is forced to add it
+    config = DEFAULT_CONFIG.copy()
 
-            row = ii%self.num_rows_per_table
-            col = ii//self.num_rows_per_table * self.num_cols_per_col
+    # add a commented reminder - yaml doesn't support comments via dump,
+    # so we write the file manually for the important ones
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write("# DVB Monitor configuration file\n")
+        f.write("# generated by DVB_Monitor.py --generate-config\n")
+        f.write("\n")
+        f.write("# REQUIRED: set this to your contact info for the DVB api\n")
+        f.write("dvb_client_name: your_name_or_email_here\n")
+        f.write("\n")
+        f.write("# REQUIRED: set this to your stop name(s)\n")
+        f.write("# stops_to_monitor:\n")
+        f.write("#   - Altmarkt\n")
+        f.write("#   - Postplatz\n")
+        f.write("\n")
+        f.write("# remaining settings with defaults:\n")
+        yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
 
-            for shift,c in enumerate(self.columns):
-                val = c.getter(departure) # get the value using the getter function
-
-                item = table.item(row, col+shift) # get the item from the table.  assumes it was created above in the init routines.
-
-                #finally, set the value.
-                item.setText(f'{val}')
+    print(f"✅ default config written to {path}")
+    print(f"⚠️  edit '{path}' and set dvb_client_name before running")
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='DVB Monitor')
+    parser.add_argument(
+        '--config',
+        default='config.yaml',
+        help='path to config yaml file (default: config.yaml)'
+    )
+    parser.add_argument(
+        '--generate-config',
+        action='store_true',
+        help='generate a default config file with name of your choice (default is `config.yaml`) and exit'
+    )
+    args = parser.parse_args()
+
+
+    if args.generate_config:
+        generate_default_config(args.generate_config)
+        sys.exit(0)
+
+
     app = QApplication(sys.argv)
 
-
-    with open("style.css",'r') as f:
-        app.setStyleSheet(f.read())
-
-    ex = DVB_Monitor()
+    ex = DVB_Monitor(app, config_path=args.config)
     sys.exit(app.exec_())
     
