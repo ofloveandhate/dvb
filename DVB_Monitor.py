@@ -589,20 +589,16 @@ class DVB_Monitor(QMainWindow):
 
 
     def clear_stale_data(self):
-        if self.verbosity>=1:
+        if self.verbosity >= 1:
             print('clearing stale data, waiting for refresh button push.')
 
         self.is_data_cleared = True
         self.departures = {}
 
-        for ind,t in self.tables.items():
-            for row in range(t.rowCount()):
-                for col in range(t.columnCount()):
-                    item = t.item(row, col)
-                    if item is not None:
-                        item.setText("")
+        for ind, t in self.tables.items():
+            t.clear()  # StopDisplay already has this method!
 
-        self.time_updated_widget.setText(f'Stale data cleared.  Refresh to start again.')
+        self.time_updated_widget.setText(f'Stale data cleared. Refresh to start again.')
 
 
     def auto_refresh(self):
