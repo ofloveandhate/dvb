@@ -1,3 +1,4 @@
+
 stops_to_monitor:
  - Pirnaischerplatz
  - Pragerstr
@@ -39,11 +40,18 @@ backlight_path:        "/sys/class/backlight/soc:backlight/brightness"
 backlight_max:         1    
 use_backlight_control: true
 
+column_group_spacing: 50
+
 columns:
   - header: "#"
     width: 35
     getter: get_line
     alignment: center
+
+  - header: "Dest"
+    width: 140
+    getter: get_destination
+    alignment: left
 
   # - header: ""
   #   width: 30
@@ -55,7 +63,4 @@ columns:
     getter: get_minutes
     alignment: right
 
-  - header: "Dest"
-    width: 110
-    getter: get_destination
-    alignment: left
+
