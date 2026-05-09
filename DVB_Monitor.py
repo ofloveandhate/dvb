@@ -238,12 +238,19 @@ class StopDisplay(QWidget):
         
         self.grid = QGridLayout()
         self.grid.setSpacing(0)
+        self.grid.setHorizontalSpacing(0)  # ADD THIS
+        self.grid.setVerticalSpacing(0)    # ADD THIS
         self.grid.setContentsMargins(0, 0, 0, 0)
         self.setLayout(self.grid)
         
         self._build_grid()
     
     def _build_grid(self):
+
+        num_cols_per_group = len(self.columns)
+        total_w = sum(col.width + col.margin_right for col in self.columns) * self.num_cols_needed
+        self.setFixedWidth(total_w)
+        
         num_cols_per_group = len(self.columns)
 
         for col_group in range(self.num_cols_needed):
