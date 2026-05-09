@@ -541,8 +541,10 @@ class DVB_Monitor(QMainWindow):
                 print(f"  {i}. {e}\n")
             sys.exit(1)
 
-        if self.verbosity>0:
-            print(f"✅ config OK: {num_cols_needed} column groups x {col_width_per_group}px = {total_table_width}px wide")
+        if self.verbosity > 0:
+            print(f"✅ config OK: {num_cols_needed} column groups x {col_width_per_group}px "
+                  f"+ {num_cols_needed - 1} spacers x {self.column_group_spacing}px "
+                  f"= {total_table_width}px wide")
 
 
     def initUI(self):
