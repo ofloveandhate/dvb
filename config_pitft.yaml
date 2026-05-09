@@ -39,7 +39,7 @@ columns:
   #   getter: get_mode_emoji
   #   alignment: left
 
-  - header: "Mins"
+  - header: "t"
     width: 30
     getter: get_minutes
     alignment: right
