@@ -3,6 +3,9 @@ from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QHBoxLayout, QGroupBo
 from PyQt5.QtGui import QIcon, QKeySequence
 from PyQt5.QtCore import pyqtSlot, QTimer
 from PyQt5.QtCore import Qt
+
+from PyQt5.QtGui import QPainter, QFontMetrics
+
 import dvb
 from datetime import datetime, timezone, timedelta
 
@@ -32,10 +35,10 @@ DEFAULT_CONFIG = {
     "verbosity": 0,
 
     "columns": [
-        {"header": "#",    "width": 35,  "getter": "get_line",        "alignment": "center", "margin_right": 0},
-        {"header": "",     "width": 30,  "getter": "get_mode_emoji",  "alignment": "left", "margin_right": 0},
-        {"header": "Mins", "width": 30,  "getter": "get_minutes",     "alignment": "right", "margin_right": 0},
-        {"header": "Dest", "width": 140, "getter": "get_destination", "alignment": "left", "margin_right": 0},
+        {"header": "#",    "width": 35,  "getter": "get_line",        "alignment": "center", "margin_right": 0, "elide": False},
+        {"header": "",     "width": 30,  "getter": "get_mode_emoji",  "alignment": "left", "margin_right": 0, "elide": False},
+        {"header": "Mins", "width": 30,  "getter": "get_minutes",     "alignment": "right", "margin_right": 0, "elide": False},
+        {"header": "Dest", "width": 140, "getter": "get_destination", "alignment": "left", "margin_right": 0, "elide": True},
     ],
 
     "is_full_screen": False,
@@ -64,7 +67,7 @@ mode_emoji = {
 
 
 
-Column = namedtuple("Column", ["header", "width", "getter", "alignment", "margin_right"])
+Column = namedtuple("Column", ["header", "width", "getter", "alignment", "margin_right", "elide"])
 
 def get_line(departure):
     return departure.line
@@ -218,20 +221,20 @@ class StopDisplay(QWidget):
                 grid_col = col_group * num_cols_per_group + col_ind
 
                 # header
-                header = QLabel(col.header)
+                header = ElidedLabel(col.header) if col.elide else QLabel(col.header)
                 header.setAlignment(Qt.AlignCenter)
                 header.setFixedSize(col.width, self.row_height)
                 header.setProperty('class', 'grid_header')
-                header.setContentsMargins(0, 0, col.margin_right, 0)  # right margin
+                header.setContentsMargins(0, 0, col.margin_right, 0)
                 self.grid.addWidget(header, 0, grid_col)
 
                 # data rows
                 for row in range(self.num_rows):
-                    label = QLabel('?')
+                    label = ElidedLabel('?') if col.elide else QLabel('?')
                     label.setAlignment(col.alignment)
                     label.setFixedSize(col.width, self.row_height)
                     label.setProperty('class', 'grid_cell')
-                    label.setContentsMargins(0, 0, col.margin_right, 0)  # right margin
+                    label.setContentsMargins(0, 0, col.margin_right, 0)
                     self.grid.addWidget(label, row + 1, grid_col)
                     self.labels[(row, grid_col)] = label
     
@@ -253,6 +256,19 @@ class StopDisplay(QWidget):
             self.labels[(row, col)].style().polish(self.labels[(row, col)])
 
 
+
+# lets us truncate certain columns
+class ElidedLabel(QLabel):
+    def __init__(self, text='', parent=None):
+        super().__init__(text, parent)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        metrics = QFontMetrics(self.font())
+        elided = metrics.elidedText(self.text(), Qt.ElideRight, self.width())
+        painter.drawText(self.rect(), self.alignment(), elided)
+
+
 class DVB_Monitor(QMainWindow):
 
     def __init__(self, app, config_path):
@@ -263,7 +279,7 @@ class DVB_Monitor(QMainWindow):
         self.setup_from_yaml(path=config_path)
 
         self.setup_internal_state()
-        
+
         self.validate_config()                   # check everything is sane
 
         self.setup_dvb_client()
@@ -379,7 +395,8 @@ class DVB_Monitor(QMainWindow):
                 width       = col["width"],
                 getter      = GETTER_REGISTRY[getter_name],
                 alignment   = ALIGNMENT_REGISTRY[alignment_name],
-                margin_right= col.get("margin_right", 0),  # default to 0 if not specified
+                margin_right= col.get("margin_right", 0),
+                elide       = col.get("elide", False),  # default to False
             ))
 
 
