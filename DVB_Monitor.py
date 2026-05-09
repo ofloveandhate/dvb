@@ -43,7 +43,15 @@ DEFAULT_CONFIG = {
 
     "is_full_screen": False,
     "is_touch": False,
-    "touch_rotation": 270
+    "touch_rotation": 270,
+
+
+    "is_touch_calibrated": False,
+    "touch_raw_x_min": 46,
+    "touch_raw_x_max": 434,
+    "touch_raw_y_min": 22,
+    "touch_raw_y_max": 287,
+
     # there is no default dvb client name, i want my user to have to make the entry themselves, so they don't use my email address.
 }
 
@@ -144,17 +152,40 @@ def transform_coords(x, y, rotation, w, h):
     else:
         return x, y
 
+def transform_coords_calibrated(x, y, w, h, x_min, x_max, y_min, y_max):
+    nx = (x - x_min) / (x_max - x_min)
+    ny = (y - y_min) / (y_max - y_min)
+    screen_x = int((1.0 - ny) * w)
+    screen_y = int(nx * h)
+    return screen_x, screen_y
+
 
 class TouchFilter(QObject):
-    def __init__(self, app, ROTATION, SCREEN_W, SCREEN_H):
+    def __init__(self, app, ROTATION, SCREEN_W, SCREEN_H,
+                 is_calibrated=False,
+                 x_min=0, x_max=1, y_min=0, y_max=1):
         super().__init__()
-        self.app = app
-        self.ROTATION = ROTATION
-        self.SCREEN_W = SCREEN_W
-        self.SCREEN_H = SCREEN_H
-        self.processing = False  # guard flag
+        self.app           = app
+        self.ROTATION      = ROTATION
+        self.SCREEN_W      = SCREEN_W
+        self.SCREEN_H      = SCREEN_H
+        self.processing    = False
+        self.is_calibrated = is_calibrated
+        self.x_min         = x_min
+        self.x_max         = x_max
+        self.y_min         = y_min
+        self.y_max         = y_max
 
-        # print(f'touch filter {ROTATION} {SCREEN_W} {SCREEN_H}')
+    def _transform(self, x, y):
+        if self.is_calibrated:
+            return transform_coords_calibrated(
+                x, y,
+                self.SCREEN_W, self.SCREEN_H,
+                self.x_min, self.x_max,
+                self.y_min, self.y_max,
+            )
+        else:
+            return transform_coords(x, y, self.ROTATION, self.SCREEN_W, self.SCREEN_H)
 
     def eventFilter(self, obj, event):
         if self.processing:
@@ -167,13 +198,11 @@ class TouchFilter(QObject):
         ):
             raw_x = event.globalPos().x()
             raw_y = event.globalPos().y()
-            new_x, new_y = transform_coords(raw_x, raw_y, self.ROTATION, self.SCREEN_W, self.SCREEN_H)
-
-            # print(f"raw=({raw_x},{raw_y}) fixed=({new_x},{new_y})")
+            new_x, new_y = self._transform(raw_x, raw_y)  # <- only change here
 
             target = self.app.widgetAt(new_x, new_y)
             if target is None:
-                return True  # block it anyway
+                return True
 
             local_pos = target.mapFromGlobal(QPoint(new_x, new_y))
 
@@ -189,10 +218,9 @@ class TouchFilter(QObject):
             self.processing = True
             self.app.sendEvent(target, new_event)
             self.processing = False
-            return True  # ALWAYS block original event
+            return True
 
         return False
-
 
 
 class StopDisplay(QWidget):
@@ -410,6 +438,12 @@ class DVB_Monitor(QMainWindow):
         self.is_full_screen = config["is_full_screen"]
         self.is_touch = config["is_touch"]
         self.touch_rotation = config["touch_rotation"]
+        
+        self.is_touch_calibrated = config["is_touch_calibrated"]
+        self.touch_raw_x_min     = config["touch_raw_x_min"]
+        self.touch_raw_x_max     = config["touch_raw_x_max"]
+        self.touch_raw_y_min     = config["touch_raw_y_min"]
+        self.touch_raw_y_max     = config["touch_raw_y_max"]
 
         self.dvb_client_name = config["dvb_client_name"]  # there should be no default for this, because the user is supposed to give contact into in this strong.
         if not self.dvb_client_name:
@@ -530,10 +564,18 @@ class DVB_Monitor(QMainWindow):
 
 
     def setup_touch(self):
-        # Install filter on the app - catches ALL events in ALL windows
-        self.touch_filter = TouchFilter(self.app, self.touch_rotation, self.width, self.height)
+        self.touch_filter = TouchFilter(
+            self.app,
+            self.touch_rotation,
+            self.width,
+            self.height,
+            is_calibrated = self.is_touch_calibrated,
+            x_min         = self.touch_raw_x_min,
+            x_max         = self.touch_raw_x_max,
+            y_min         = self.touch_raw_y_min,
+            y_max         = self.touch_raw_y_max,
+        )
         self.installEventFilter(self.touch_filter)
-
         self._install_filter_on_children()
 
     def _install_filter_on_children(self):

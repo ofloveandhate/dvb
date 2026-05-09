@@ -25,7 +25,12 @@ window_title: "DVB Local Stop Monitor"
 num_departures_to_monitor: 12 
 
 is_touch: true
-touch_rotation: 270
+is_touch_calibrated: true
+touch_raw_x_min: 46
+touch_raw_x_max: 434
+touch_raw_y_min: 22
+touch_raw_y_max: 287
+
 is_full_screen: true
 
 columns:
