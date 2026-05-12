@@ -33,6 +33,7 @@ DEFAULT_CONFIG = {
     "window_title": "DVB Local Stop Monitor",
     "num_departures_to_monitor":12,
     "verbosity": 0,
+    "refresh_forever": False,
 
     "columns": [
         {"header": "#",    "width": 35,  "getter": "get_line",        "alignment": "center", "margin_right": 0, "elide": False},
@@ -422,6 +423,7 @@ class DVB_Monitor(QMainWindow):
         self.num_rows_per_table = config["num_rows_per_table"]
         self.num_stops_per_page = config["num_stops_per_page"]
         self.consecutive_autorefresh_timeout_threshold = config["consecutive_autorefresh_timeout_threshold"]
+        self.refresh_forever = config["refresh_forever"]
         self.refresh_interval = config["refresh_interval"]
         self.clear_interval = config["clear_interval"]
 
@@ -791,7 +793,7 @@ class DVB_Monitor(QMainWindow):
         self.refresh()
         self.num_consecutive_autorefreshes += 1
 
-        if self.num_consecutive_autorefreshes < self.consecutive_autorefresh_timeout_threshold:
+        if self.refresh_forever or self.num_consecutive_autorefreshes < self.consecutive_autorefresh_timeout_threshold:
             self.timer_refresh.start(self.refresh_interval_ms)
             self.timer_stale_data.stop()
         else:
@@ -811,7 +813,8 @@ class DVB_Monitor(QMainWindow):
 
         self.num_consecutive_autorefreshes = 0
         self.timer_refresh.start(self.refresh_interval_ms)
-        self.timer_stale_data.start(self.clear_interval_ms)
+        if not self.refresh_forever:
+            self.timer_stale_data.start(self.clear_interval_ms)
 
 
 
@@ -932,6 +935,10 @@ class DVB_Monitor(QMainWindow):
                 print(f"⚠️ could not turn backlight on: {e}")
 
     def backlight_off(self):
+
+        if self.refresh_forever:
+                return
+
         if self.use_backlight_control:
             try:
                 with open(self.backlight_path, 'w') as f:
