@@ -1,33 +1,86 @@
-QGroupBox{background-color: black;}
-QLabel.header{font-size: 27pt; color: white; background-color: blue;}
-QLabel.title{font-size: 24pt; color: white;}
-QLabel.haltestelle_header{font-size: 18pt; color: white;}
+/*
+ * ============================================================
+ * COLOR PALETTE - change values here, they are used throughout
+ * ============================================================
+ *
+ * background_dark:    #1a1a1a   main background
+ * background_medium:  #333333   raised elements eg buttons, grid header
+ * background_light:   #555555   hover, pressed states
+ * border_color:       #555555   borders
+ * border_dark:        #2a2a2a   subtle borders eg grid cells
+ * text_primary:       #ffffff   main text
+ * text_accent:        yellow    highlighted text eg stop name
+ * background_black:   #000000   deepest background
+ * background_accent:  blue      accent background eg header
+ * ============================================================
+ */
 
-QLabel.body{font-size: 23pt; color: white;}
-QLabel.footer{font-size: 8pt; color: white;}
-
-
-QTableWidget {
-
-    font-family: "Nunito";
+QGroupBox {
+    background-color: #000000;          /* background_black */
 }
 
-QTableWidget::item {
-    font-family: "Nunito";
+QMainWindow {
+    background-color: #1a1a1a;         /* background_dark */
 }
 
-QTableWidget::item:selected {
-
+QWidget {
+    background-color: #1a1a1a;         /* background_dark */
 }
 
-QTableWidget::item:hover {
-
+QLabel[class="header"] {
+    font-size: 27pt;
+    color: #ffffff;                     /* text_primary */
+    background-color: blue;             /* background_accent */
 }
 
-QHeaderView::section {
-
+QLabel[class="title"] {
+    font-size: 24pt;
+    color: #ffffff;                     /* text_primary */
 }
 
-QTableWidget::corner {
-
+QLabel[class="haltestelle_header"] {
+    font-size: 18pt;
+    font-weight: bold;
+    color: yellow;                      /* text_accent */
 }
+
+QLabel[class="body"] {
+    font-size: 23pt;
+    color: #ffffff;                     /* text_primary */
+}
+
+QLabel[class="footer"] {
+    font-size: 8pt;
+    color: #ffffff;                     /* text_primary */
+}
+
+QLabel[class="grid_header"] {
+    font-weight: bold;
+    background-color: #333333;          /* background_medium */
+    color: #ffffff;                     /* text_primary */
+    border: 1px solid #555555;          /* border_color */
+    padding: 2px;
+}
+
+QLabel[class="grid_cell"] {
+    background-color: #1a1a1a;         /* background_dark */
+    color: #ffffff;                     /* text_primary */
+    border: 1px solid #2a2a2a;          /* border_dark */
+    padding: 2px;
+}
+
+QPushButton {
+    background-color: #333333;          /* background_medium */
+    color: #ffffff;                     /* text_primary */
+    border: 1px solid #555555;          /* border_color */
+    padding: 4px;
+}
+
+QPushButton:pressed {
+    background-color: #555555;          /* background_light */
+}
+
+QTableWidget::item:selected {}
+QTableWidget::item:hover {}
+QHeaderView::section {}
+QTableWidget::corner {}
