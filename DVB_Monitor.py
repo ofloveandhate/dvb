@@ -988,8 +988,8 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--generate-config',
-        action='store_true',
-        help='generate a default config file with name of your choice (default is `config.yaml`) and exit'
+        default=None,
+        help='generate a default config file with name of your choice and exit.  Requires an argument.  like `python DVB_Monitor.py --generate-config myconfig.yaml`'
     )
     args = parser.parse_args()
 
