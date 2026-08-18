@@ -1,0 +1,51 @@
+stops_to_monitor:
+  - Johannstadt
+  - Tatzberg
+  - Augsburger Str
+
+row_height: 30                # pixels
+num_rows_per_table: 12         # make additional columns when departures exceed this
+num_stops_per_page: 3
+
+consecutive_autorefresh_timeout_threshold: 2
+refresh_interval: 60          # seconds
+clear_interval: 60           # seconds
+
+window_width: 1300 # in pixels
+window_height: 400  # PiTFT Plus': [0, 0, 480, 320] #https://www.adafruit.com/product/2441
+
+window_loc_x: 0
+window_loc_y: 0
+
+mock_update: false
+
+verbosity: 1
+
+window_title: "DVB Local Stop Monitor" 
+num_departures_to_monitor: 12 
+
+dvb_client_name: "" # set your name and email address here!!!
+
+columns:
+  - header: "#"
+    width: 40
+    getter: get_line
+    alignment: center
+
+  - header: ""
+    width: 35
+    getter: get_mode_emoji
+    alignment: left
+
+  - header: "Dest"
+    width: 150
+    getter: get_destination
+    alignment: left
+
+
+
+  - header: "t"
+    width: 35
+    getter: get_minutes
+    alignment: right
+
