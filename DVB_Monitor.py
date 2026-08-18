@@ -1,7 +1,7 @@
 import sys
 from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QHBoxLayout, QGroupBox, QDialog, QVBoxLayout, QGridLayout, QMainWindow, QTableWidget, QTableWidgetItem, QPushButton, QHeaderView, QShortcut
 from PyQt5.QtGui import QIcon, QKeySequence
-from PyQt5.QtCore import pyqtSlot, QTimer
+from PyQt5.QtCore import pyqtSlot, QTimer, QThread, pyqtSignal
 from PyQt5.QtCore import Qt
 
 from PyQt5.QtGui import QPainter, QFontMetrics
@@ -16,6 +16,10 @@ import numpy as np # for infinity
 
 
 import os
+import copy
+import math
+import time
+import traceback
 
 DEFAULT_CONFIG = {
     "stops_to_monitor": ["Altmarkt"],
@@ -59,6 +63,21 @@ DEFAULT_CONFIG = {
 
     "css_file": "style.css",
 
+    # --- network robustness ---
+    "request_timeout":          8,     # seconds to wait for the response body.  dvb's own default is 15.
+    "request_connect_timeout":  4,     # seconds to wait for the tcp connection
+    "cache_stop_ids":           True,  # resolve stop name -> id once.  halves the number of requests.
+    "retry_backoff_factor":     2.0,   # after a total failure, wait interval * factor**n before retrying
+    "retry_backoff_max":        600,   # seconds.  cap on the backoff.
+    "retry_when_stale":         False, # keep retrying (slowly) even after stale data has been cleared
+    "fetch_in_background":      True,  # fetch off the gui thread, so the ui never freezes
+
+    # --- what to show when the api misbehaves ---
+    "stale_data_threshold":     300,   # seconds.  data older than this is marked stale.
+    "show_stale_data_on_error": True,  # keep the last good departures on screen when a fetch fails
+    "error_placeholder":        "—",   # drawn in a cell whose getter raised
+    "unknown_mode_emoji":       "",    # drawn for a mode of transit we have no emoji for
+
     # there is no default dvb client name, i want my user to have to make the entry themselves, so they don't use my email address.
 }
 
@@ -77,23 +96,43 @@ mode_emoji = {
     'Tram': '🚋',
     'CityBus': '🚌',
     'PlusBus': '🚎',
-    'IntercityBus': '🚍'
+    'IntercityBus': '🚍',
+    # the dvb api returns these too; without them we used to fall into the broken except branch
+    'SuburbanRailway': '🚆',
+    'Train': '🚆',
+    'Ferry': '⛴️',
+    'Cableway': '🚡',
+    'HailedSharedTaxi': '🚕',
+    '': '',
 }
+
+# set from config in setup_from_yaml.  the getters are module-level functions reached through
+# GETTER_REGISTRY, so they have no `self` to read config from.
+UNKNOWN_MODE_EMOJI = ''
+
+# so an unknown mode gets reported once, not once per refresh, forever.
+_warned_modes = set()
 
 
 
 Column = namedtuple("Column", ["header", "width", "getter", "alignment", "margin_right", "elide"])
 
 def get_line(departure):
-    return departure.line
+    return getattr(departure, 'line', '?')
 
 def get_mode_emoji(departure):
-    try:
-        e = mode_emoji[departure.mode]
-    except Exception as e:
-        print(f'unfound emoji for mode {departure.mode}')
+    """
+    map the departure's mode of transit onto an emoji.
 
-    return e
+    never raises.  an unrecognized mode gets the configured placeholder, and is reported once.
+    """
+    mode = getattr(departure, 'mode', '') or ''
+
+    if mode not in mode_emoji and mode not in _warned_modes:
+        _warned_modes.add(mode)
+        print(f'ℹ️ no emoji known for mode {mode!r}, using {UNKNOWN_MODE_EMOJI!r}')
+
+    return mode_emoji.get(mode, UNKNOWN_MODE_EMOJI)
 
 def get_line_w_mode(departure):
     line = get_line(departure)
@@ -103,7 +142,7 @@ def get_line_w_mode(departure):
     
 
 def get_destination(departure):
-    return departure.direction
+    return getattr(departure, 'direction', '?')
 
 def get_minutes(departure):
     """
@@ -112,13 +151,23 @@ def get_minutes(departure):
     problem: if the real_time is none, then this may fail.  so use a try/except around this.
     """
 
-    if departure.real_time:
-        minutes = int((departure.real_time - datetime.now(timezone.utc)).total_seconds() // 60 + 1 )
+    try:
+        real_time = getattr(departure, 'real_time', None)
+
+        if not real_time:
+            return np.inf
+
+        # real dvb data is always tz-aware.  this is purely defensive, so that a naive datetime
+        # sinks to the bottom of the sort instead of raising and killing the whole refresh.
+        if real_time.tzinfo is None:
+            real_time = real_time.replace(tzinfo=timezone.utc)
+
+        minutes = int((real_time - datetime.now(timezone.utc)).total_seconds() // 60 + 1 )
         # adding +1 to make match the iphone app
-    else:
+    except Exception as e:
+        print(f'⚠️ could not compute minutes to departure: {type(e).__name__}: {e}')
         return np.inf
 
-    
     return minutes
 
 
@@ -136,6 +185,84 @@ ALIGNMENT_REGISTRY = {
     "right"  : Qt.AlignRight   | Qt.AlignBottom,
     "center" : Qt.AlignHCenter | Qt.AlignBottom,
 }
+
+
+
+
+# what one attempt at one stop produced.  `error` is None on success.
+# immutable on purpose: it gets handed across the thread boundary in the background fetcher.
+FetchResult = namedtuple("FetchResult", ["stop_name", "departures", "stop_id", "error", "duration"])
+
+
+def _short_err(e, limit=48):
+    """
+    boil an exception down to something that fits in a footer on a 480px screen.
+
+    requests tacks ' for url: https://...' onto its messages, which is pure noise here: there
+    is only one api, and the whole string then overflows the widget.
+    """
+    text = ' '.join(str(e).split())
+
+    for marker in (' for url:', ' (Caused by'):
+        if marker in text:
+            text = text.split(marker)[0]
+
+    if len(text) > limit:
+        text = text[:limit - 1] + '…'
+
+    return text
+
+
+def fetch_departures_for_stop(client, stop_name, stop_id=None, verbosity=0):
+    """
+    fetch and sort the departures for one stop.
+
+    NEVER raises.  always returns a FetchResult, so that one sick stop can't take down the
+    refresh for the others, and so an api hiccup can't kill the app from inside a qt slot.
+
+    this takes no `self` and mutates nothing, which is what makes it safe to call from the
+    background fetcher thread.
+    """
+    t_start = time.monotonic()
+
+    def failed(msg):
+        return FetchResult(stop_name, None, stop_id, msg, time.monotonic() - t_start)
+
+    try:
+        # resolve the name to a numeric id ourselves, so it can be cached by the caller.  dvb's
+        # monitor() would otherwise do this lookup internally on every single call -- that's two
+        # http requests per stop per refresh instead of one.
+        if not stop_id:
+            try:
+                stop_id = client._resolve_stop_id(stop_name)
+            except AttributeError:
+                stop_id = None   # private api gone in some future dvb; fall back to the name
+
+        departures = client.monitor(stop=stop_id or stop_name, limit=0)
+
+        if not isinstance(departures, list):
+            return failed(f'unexpected response type {type(departures).__name__}')
+
+        departures = list(departures)
+
+        # sorting lives in here, inside the guard, so a malformed departure can't kill the refresh
+        departures.sort(key=get_minutes)
+
+        return FetchResult(stop_name, departures, stop_id, None, time.monotonic() - t_start)
+
+    # these two subclass dvb.DVBError, so they must be caught before the bare Exception below.
+    # referenced qualified, because a bare `from dvb import ConnectionError` shadows the builtin.
+    except dvb.ConnectionError as e:
+        return failed(f'network: {_short_err(e)}')
+    except dvb.APIError as e:
+        return failed(f'api: {_short_err(e)}')
+    except Exception as e:
+        # the bare catch is required, not lazy: dvb only wraps requests exceptions.  the r.json()
+        # call and its date parsing sit outside that wrapping, so JSONDecodeError, KeyError and
+        # ValueError all escape it untouched.
+        if verbosity >= 2:
+            traceback.print_exc()
+        return failed(f'{type(e).__name__}: {_short_err(e)}')
 
 
 
@@ -233,6 +360,36 @@ class TouchFilter(QObject):
             return True
 
         return False
+
+
+class DepartureFetcher(QThread):
+    """
+    fetches stops off the gui thread, so a slow or hung api never freezes the display.
+
+    one serial worker on purpose, not a pool: dvb.Client holds a single requests.Session, which
+    isn't documented as thread safe, and serial fetching also avoids bursting the vvo api.
+    if you ever want them in parallel, give each worker its OWN dvb.Client -- never share one.
+    """
+
+    stop_fetched = pyqtSignal(object)  # one FetchResult, emitted as each stop lands
+    all_finished = pyqtSignal()
+
+    def __init__(self, client, jobs, verbosity=0, parent=None):
+        super().__init__(parent)
+        self.client    = client
+        self.jobs      = jobs       # [(stop_name, stop_id_or_None)], snapshotted on the gui thread
+        self.verbosity = verbosity
+
+    def run(self):
+        for stop_name, stop_id in self.jobs:
+            if self.isInterruptionRequested():
+                break
+
+            # the FetchResult carries back the resolved stop id, so the gui thread can cache it
+            self.stop_fetched.emit(
+                fetch_departures_for_stop(self.client, stop_name, stop_id, self.verbosity))
+
+        self.all_finished.emit()
 
 
 class StopDisplay(QWidget):
@@ -359,6 +516,17 @@ class DVB_Monitor(QMainWindow):
         self.num_consecutive_autorefreshes = 0
         self.is_data_cleared = True
 
+        # per-stop health, so one sick stop is visible without hiding the healthy ones.
+        # status is one of 'never' (not fetched yet), 'ok', 'error'.
+        self.stop_status       = {name: 'never' for name in self.stops_to_monitor}
+        self.stop_error        = {}   # stop name -> short message from the last failure
+        self.stop_last_success = {}   # stop name -> datetime of the last good fetch
+        self.stop_id_cache     = {}   # stop name -> numeric dvb id
+
+        self.num_consecutive_failures = 0   # counts refreshes where EVERY stop failed
+        self.fetcher                  = None # the background QThread, when one is in flight
+        self.was_last_refresh_automatic = True
+
         self.is_backlight_off = False
 
         #############
@@ -377,19 +545,68 @@ class DVB_Monitor(QMainWindow):
 
         self.num_cols_per_col = len(self.columns)  # because each departure gets this many, and we use multiple cols of departures
 
-        import math
         self.num_cols_needed = math.ceil(self.num_departures_to_monitor / self.num_rows_per_table)
 
         self.is_nav_needed = len(self.stops_to_monitor) > self.num_stops_per_page
         self.is_nav_needed_prev = len(self.stops_to_monitor) > self.num_stops_per_page
-        self.is_nav_needed_next = len(self.stops_to_monitor) > self.num_stops_per_page + 1
-        self.num_pages_needed = len(self.stops_to_monitor) // self.num_stops_per_page
+        self.is_nav_needed_next = len(self.stops_to_monitor) > self.num_stops_per_page
+
+        # ceil, not floor: floor silently dropped a partial last page (4 stops at 3/page made the
+        # 4th unreachable).  max(1, ...) because floor gave 0 when num_stops_per_page > len(stops),
+        # and change_page then divided by it.
+        self.num_pages_needed = max(1, math.ceil(len(self.stops_to_monitor) / self.num_stops_per_page))
         self.refresh_interval_ms = self.refresh_interval * 1000
         self.clear_interval_ms = self.clear_interval * 1000
 
     def setup_dvb_client(self):
         # the core of this display.  use this object to make queries into the DVB api.
         self.client = dvb.Client(user_agent=self.dvb_client_name)
+        self._install_request_timeout()
+
+    def _install_request_timeout(self):
+        """
+        make the dvb package honor our timeout instead of its own.
+
+        dvb 3.0.0 hardcodes `_TIMEOUT = 15` as a module global and passes it explicitly to
+        session.get/post.  fifteen seconds per request, with one request per stop, is a long
+        time to sit there when the api is black-holing us.
+
+        two independent hooks, both optional and both guarded.  if a future dvb renames either
+        private name we print a warning and run on dvb's own timeout rather than crashing.
+        """
+        timeout = (self.request_connect_timeout, self.request_timeout)
+
+        # hook 1, the primary.  Session.request is stable public `requests` api; only the
+        # `_session` attribute name is private.  this must OVERWRITE rather than set a default,
+        # because dvb passes timeout= explicitly on every call.
+        session = getattr(self.client, '_session', None)
+        if session is not None and hasattr(session, 'request'):
+            original_request = session.request
+
+            def request_with_timeout(method, url, **kwargs):
+                kwargs['timeout'] = timeout
+                return original_request(method, url, **kwargs)
+
+            session.request = request_with_timeout
+            if self.verbosity >= 1:
+                print(f'ℹ️ dvb request timeout set to {timeout} (connect, read)')
+        else:
+            print('⚠️ could not find the dvb client session; using the dvb package default timeout')
+
+        # hook 2, the fallback.  read at call time, so assigning to it works.
+        try:
+            import dvb.dvb as dvb_impl
+            if isinstance(getattr(dvb_impl, '_TIMEOUT', None), (int, float)):
+                dvb_impl._TIMEOUT = self.request_timeout
+        except Exception as e:
+            if self.verbosity >= 1:
+                print(f'ℹ️ could not lower dvb._TIMEOUT ({e}); relying on the session wrapper')
+
+    def _resolve_stop_id(self, stop_name):
+        """the cached numeric id for a stop, or None to fall back to querying by name."""
+        if not self.cache_stop_ids:
+            return None
+        return self.stop_id_cache.get(stop_name)
 
 
     def setup_from_yaml(self, path):
@@ -399,9 +616,26 @@ class DVB_Monitor(QMainWindow):
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     user_config =  yaml.safe_load(f)
-            except Exception as e:
-                print("didn't find config.yaml at the current location")
+            except FileNotFoundError:
+                print(f"❌ no config file found at '{path}'")
+                print(f"   generate one with: python DVB_Monitor.py --generate-config {path}")
+                sys.exit(-12039)
+            except yaml.YAMLError as e:
+                print(f"❌ '{path}' is not valid YAML:")
                 print(e)
+                sys.exit(-12039)
+            except Exception as e:
+                print(f"❌ could not read '{path}'")
+                print(e)
+                sys.exit(-12039)
+
+            # an empty file parses to None, and a top-level list/scalar parses to the wrong type.
+            # either way `"..." not in user_config` below would raise something unhelpful.
+            if user_config is None:
+                user_config = {}
+            if not isinstance(user_config, dict):
+                print(f"❌ '{path}' must contain a YAML mapping at the top level, "
+                      f"got {type(user_config).__name__}")
                 sys.exit(-12039)
 
             if "dvb_client_name" not in user_config:
@@ -410,8 +644,8 @@ class DVB_Monitor(QMainWindow):
 
         user_config = load_config(path)
 
-        # read from defaults
-        config = DEFAULT_CONFIG.copy()
+        # read from defaults.  deep, because `columns` is a nested list of dicts.
+        config = copy.deepcopy(DEFAULT_CONFIG)
 
         # then overwrite with the items from the user's yaml file
         config.update(user_config)
@@ -480,6 +714,23 @@ class DVB_Monitor(QMainWindow):
 
         self.css_file = config["css_file"]
 
+        # --- network robustness ---
+        self.request_timeout         = max(1.0, float(config["request_timeout"]))
+        self.request_connect_timeout = max(1.0, float(config["request_connect_timeout"]))
+        self.cache_stop_ids          = bool(config["cache_stop_ids"])
+        self.retry_backoff_factor    = max(1.0, float(config["retry_backoff_factor"]))
+        self.retry_backoff_max       = max(1.0, float(config["retry_backoff_max"]))
+        self.retry_when_stale        = bool(config["retry_when_stale"])
+        self.fetch_in_background     = bool(config["fetch_in_background"])
+
+        # --- what to show when the api misbehaves ---
+        self.stale_data_threshold     = max(1.0, float(config["stale_data_threshold"]))
+        self.show_stale_data_on_error = bool(config["show_stale_data_on_error"])
+        self.error_placeholder        = config["error_placeholder"]
+
+        global UNKNOWN_MODE_EMOJI
+        UNKNOWN_MODE_EMOJI = config["unknown_mode_emoji"]
+
         self.dvb_client_name = config["dvb_client_name"]  # there should be no default for this, because the user is supposed to give contact into in this strong.
         if not self.dvb_client_name:
             raise RuntimeError('dvb_client_name must not be blank')
@@ -537,6 +788,17 @@ class DVB_Monitor(QMainWindow):
         if not self.stops_to_monitor:
             errors.append("stops_to_monitor is empty, add at least one stop")
 
+        if self.num_stops_per_page < 1:
+            errors.append(f"num_stops_per_page must be at least 1, got {self.num_stops_per_page}")
+
+        if self.request_timeout > self.refresh_interval:
+            warnings.append(f"request_timeout ({self.request_timeout}s) exceeds refresh_interval "
+                            f"({self.refresh_interval}s), so refreshes may overlap")
+
+        if self.stale_data_threshold < self.refresh_interval:
+            warnings.append(f"stale_data_threshold ({self.stale_data_threshold}s) is shorter than "
+                            f"refresh_interval ({self.refresh_interval}s), so data will look stale constantly")
+
         # check window size is sensible
         if self.width < 100 or self.height < 100:
             errors.append(f"window size {self.width}x{self.height} seems too small")
@@ -588,11 +850,14 @@ class DVB_Monitor(QMainWindow):
         self.escape_shortcut.activated.connect(QApplication.quit)
         print('ℹ️ press escape to close window (when it has focus)')
 
-        self.shortcut_prev = QShortcut(QKeySequence(Qt.Key_Left), self)
-        self.shortcut_prev.activated.connect(lambda: self.change_page(-1))
+        # gated the same way the nav buttons are.  these used to be wired unconditionally, so on
+        # a single-page config an arrow key divided by a num_pages_needed of zero.
+        if self.is_nav_needed:
+            self.shortcut_prev = QShortcut(QKeySequence(Qt.Key_Left), self)
+            self.shortcut_prev.activated.connect(lambda: self.change_page(-1))
 
-        self.shortcut_next = QShortcut(QKeySequence(Qt.Key_Right), self)
-        self.shortcut_next.activated.connect(lambda: self.change_page(+1))
+            self.shortcut_next = QShortcut(QKeySequence(Qt.Key_Right), self)
+            self.shortcut_next.activated.connect(lambda: self.change_page(+1))
 
         self.shortcut_refresh = QShortcut(QKeySequence(Qt.Key_Up), self)
         self.shortcut_refresh.activated.connect(self.manual_refresh)
@@ -608,7 +873,15 @@ class DVB_Monitor(QMainWindow):
         if self.is_touch:
             self.setup_touch()
 
-        self.auto_refresh() # kick it off!
+        # show the window BEFORE the first fetch.  previously the only self.show() was the one at
+        # the end of rebuild(), so a failed first fetch meant no window ever appeared at all.
+        self.time_updated_widget.setText('starting up…')
+        if not self.is_full_screen:
+            self.show()
+        self.app.processEvents()   # paint the empty grid now, rather than after the first fetch
+
+        # via the event loop, so it is already running before the worker thread starts
+        QTimer.singleShot(0, self.auto_refresh) # kick it off!
 
 
     def setup_touch(self):
@@ -768,6 +1041,17 @@ class DVB_Monitor(QMainWindow):
         self.timer_stale_data = QTimer(self)
         self.timer_stale_data.setSingleShot(True)
         self.timer_stale_data.timeout.connect(self.clear_stale_data)
+
+        # the background fetch is what re-arms timer_refresh when it completes.  if it somehow
+        # never reports completion, nothing would ever schedule another refresh and the display
+        # would quietly freeze -- which is the failure mode this whole change exists to remove.
+        self.timer_fetch_watchdog = QTimer(self)
+        self.timer_fetch_watchdog.setSingleShot(True)
+        self.timer_fetch_watchdog.timeout.connect(self._on_fetch_watchdog)
+
+        # the escape shortcut calls QApplication.quit directly, which does NOT go through
+        # closeEvent.  without this, quitting mid-fetch aborts on a still-running QThread.
+        self.app.aboutToQuit.connect(self._stop_fetcher)
     
 
 
@@ -778,6 +1062,7 @@ class DVB_Monitor(QMainWindow):
 
         self.is_data_cleared = True
         self.departures = {}
+        # the per-stop status dicts survive, so the footer can still explain WHY there is nothing
 
         for ind, t in self.tables.items():
             t.clear()  # StopDisplay already has this method!
@@ -785,84 +1070,289 @@ class DVB_Monitor(QMainWindow):
         self.backlight_off()
         self.time_updated_widget.setText(f'Stale data cleared. Refresh to start again.')
 
+        if self.retry_when_stale:
+            self.was_last_refresh_automatic = True
+            self.timer_refresh.start(max(self.refresh_interval_ms, self._next_refresh_interval_ms()))
+
 
     def auto_refresh(self):
         if self.verbosity>=1:
             print('auto refreshing.')
 
-        self.refresh()
         self.num_consecutive_autorefreshes += 1
+        self.was_last_refresh_automatic = True
 
-        if self.refresh_forever or self.num_consecutive_autorefreshes < self.consecutive_autorefresh_timeout_threshold:
-            self.timer_refresh.start(self.refresh_interval_ms)
-            self.timer_stale_data.stop()
-        else:
-            self.timer_stale_data.start(self.clear_interval_ms)
+        self.refresh()
 
-        
-
-
-
-
+        # the next tick is armed in _finish_refresh, not here.  when fetching in the background
+        # refresh() returns before any data has arrived, and the backoff can't be computed until
+        # we know whether the fetch succeeded.
 
     def manual_refresh(self):
         if self.verbosity>=1:
             print('manually refreshing.')
 
+        self.num_consecutive_autorefreshes = 0
+        # a human pressing refresh means "try now", so drop any accumulated backoff
+        self.num_consecutive_failures = 0
+        self.was_last_refresh_automatic = False
+
         self.refresh()
 
-        self.num_consecutive_autorefreshes = 0
         self.timer_refresh.start(self.refresh_interval_ms)
         if not self.refresh_forever:
             self.timer_stale_data.start(self.clear_interval_ms)
+
+    def _schedule_next_auto_refresh(self):
+        """
+        arm the next automatic refresh.  same decision tree as before, just relocated out of
+        auto_refresh so it can run after an asynchronous fetch has actually finished.
+        """
+        if not self.was_last_refresh_automatic:
+            return   # manual_refresh sets its own timers
+
+        if self.refresh_forever or self.num_consecutive_autorefreshes < self.consecutive_autorefresh_timeout_threshold:
+            interval_ms = self._next_refresh_interval_ms()
+
+            if self.num_consecutive_failures > 0:
+                print(f'ℹ️ {self.num_consecutive_failures} consecutive failed refreshes, '
+                      f'next try in {interval_ms//1000}s')
+
+            self.timer_refresh.start(interval_ms)
+            self.timer_stale_data.stop()
+        else:
+            self.timer_stale_data.start(self.clear_interval_ms)
+
+    def _next_refresh_interval_ms(self):
+        """
+        normally the configured interval.  while every stop is failing, back off exponentially
+        so we stop hammering an api that is plainly down.
+        """
+        if self.num_consecutive_failures <= 0:
+            return self.refresh_interval_ms
+
+        delay = min(self.refresh_interval * (self.retry_backoff_factor ** self.num_consecutive_failures),
+                    self.retry_backoff_max)
+
+        return int(delay * 1000)
 
 
 
     def refresh(self):
         self.backlight_on()
-        self.is_data_cleared = False
-        self._refresh_all_departures()
-        self._refresh_time()
 
-        self.rebuild()
+        if self.fetch_in_background:
+            # returns immediately.  results arrive on _on_stop_fetched, completion on
+            # _on_fetch_finished, both back on the gui thread.
+            self._start_background_refresh()
+        else:
+            try:
+                self._refresh_all_departures()
+            except Exception as e:
+                # _refresh_all_departures is written not to raise.  this is the last-ditch net
+                # that keeps an unforeseen bug from killing the app from inside a qt slot.
+                print(f'⚠️ unexpected error during refresh: {type(e).__name__}: {e}')
+                if self.verbosity >= 2:
+                    traceback.print_exc()
 
-    def _refresh_all_departures(self):
+            self._finish_refresh()
 
+    def _pending_jobs(self):
+        """the (stop_name, cached_stop_id) pairs that actually need fetching this cycle."""
+        jobs = []
         for stop_name in self.stops_to_monitor:
-
-            if not self.mock_update or stop_name not in self.departures:
-
-                if self.verbosity>=1:
-                    print(f'getting departures for {stop_name}')
-                self.departures[stop_name] = self.client.monitor(stop=stop_name,limit=0)
-                self.time_last_updated = datetime.now()
-            else:
+            if self.mock_update and stop_name in self.departures:
                 if self.verbosity>=1:
                     print(f'mock getting departures for {stop_name}')
+                continue
+            jobs.append((stop_name, self._resolve_stop_id(stop_name)))
+        return jobs
 
-            # unpack
-            departures = self.departures[stop_name]
+    def _refresh_all_departures(self):
+        """
+        synchronous fetch of every stop, used when fetch_in_background is false.
 
-            # sort the list of departures.  in-place sort.
-            departures.sort(key = get_minutes)
+        per-stop isolated: a failure on one stop no longer prevents the others from updating,
+        and the loop as a whole cannot raise.
+        """
+        for stop_name, stop_id in self._pending_jobs():
+            if self.verbosity>=1:
+                print(f'getting departures for {stop_name}')
+
+            self._record_stop_result(
+                fetch_departures_for_stop(self.client, stop_name, stop_id, self.verbosity))
+
+    def _record_stop_result(self, result):
+        """
+        fold one FetchResult into our state.  the only writer of self.departures, and it always
+        runs on the gui thread -- including when the background fetcher produced the result.
+        """
+        if result.error is None:
+            self.departures[result.stop_name]        = result.departures
+            self.stop_status[result.stop_name]       = 'ok'
+            self.stop_error[result.stop_name]        = None
+            self.stop_last_success[result.stop_name] = datetime.now()
+            self.time_last_updated                   = datetime.now()
+
+            if result.stop_id:
+                self.stop_id_cache[result.stop_name] = result.stop_id
+
+            if self.verbosity>=1:
+                print(f'✅ {result.stop_name}: {len(result.departures)} departures '
+                      f'in {result.duration:.1f}s')
+        else:
+            self.stop_status[result.stop_name] = 'error'
+            self.stop_error[result.stop_name]  = result.error
+
+            if not self.show_stale_data_on_error:
+                self.departures.pop(result.stop_name, None)
+
+            # printed regardless of verbosity.  a display that silently shows nothing is exactly
+            # the symptom this whole change is about.
+            print(f'⚠️ {result.stop_name}: {result.error}')
+
+    def _update_failure_bookkeeping(self):
+        """
+        back off only when EVERY stop failed, i.e. a real outage.  one flaky stop among three
+        keeps the normal cadence, so the healthy stops stay fresh.
+        """
+        statuses = [self.stop_status.get(name, 'never') for name in self.stops_to_monitor]
+
+        if statuses and all(s == 'error' for s in statuses):
+            self.num_consecutive_failures += 1
+        else:
+            self.num_consecutive_failures = 0
+
+    def _finish_refresh(self):
+        """everything that has to happen once a refresh cycle is complete, however it ran."""
+        self.timer_fetch_watchdog.stop()
+
+        self._update_failure_bookkeeping()
+
+        # reflect what we actually have, rather than assuming the fetch worked
+        self.is_data_cleared = not any(self.departures.get(name) for name in self.stops_to_monitor)
+
+        self._refresh_time()
+        self.rebuild()
+        self._schedule_next_auto_refresh()
 
     def _refresh_time(self):
-
-
-        timestamp = self.time_last_updated.strftime("%Y-%m-%d %H:%M:%S")
+        """the footer: when we last had good data, and what is currently broken."""
         more_text = ''
         if self.mock_update:
             more_text = "`mock_update` is set to true. "
 
-        self.time_updated_widget.setText(f'{more_text}{timestamp}')
+        num_failed = sum(1 for name in self.stops_to_monitor
+                         if self.stop_status.get(name) == 'error')
+        num_total  = len(self.stops_to_monitor)
+
+        if self.time_last_updated is None:
+            if num_failed:
+                message = f'❌ cannot reach DVB ({self._last_error_summary()})'
+                if self.num_consecutive_failures:
+                    message += f' · retry in {self._next_refresh_interval_ms()//1000}s'
+            else:
+                message = 'no data yet…'
+            self.time_updated_widget.setText(f'{more_text}{message}')
+            return
+
+        timestamp = self.time_last_updated.strftime("%Y-%m-%d %H:%M:%S")
+
+        if num_failed:
+            self.time_updated_widget.setText(
+                f'{more_text}⚠️ {num_failed}/{num_total} stops failed · last ok {timestamp}')
+        else:
+            # unchanged from before, so the happy path looks exactly as it always has
+            self.time_updated_widget.setText(f'{more_text}{timestamp}')
+
+    def _start_background_refresh(self):
+        """kick off a fetch on the worker thread.  returns immediately."""
+        if self.fetcher is not None and self.fetcher.isRunning():
+            if self.verbosity>=1:
+                print('ℹ️ a refresh is already in flight, skipping this tick')
+            return
+
+        jobs = self._pending_jobs()
+
+        if not jobs:
+            self._finish_refresh()
+            return
+
+        if self.verbosity>=1:
+            for stop_name, _ in jobs:
+                print(f'getting departures for {stop_name}')
+
+        self.fetcher = DepartureFetcher(self.client, jobs, self.verbosity, parent=self)
+        self.fetcher.stop_fetched.connect(self._on_stop_fetched)
+        self.fetcher.all_finished.connect(self._on_fetch_finished)
+        self.fetcher.start()
+
+        # generous: every job timing out, plus slack.  this should never fire.
+        watchdog_ms = int((len(jobs) * (self.request_timeout + self.request_connect_timeout) + 30) * 1000)
+        self.timer_fetch_watchdog.start(watchdog_ms)
+
+    def _on_fetch_watchdog(self):
+        print('⚠️ background fetch never reported completion; rescheduling anyway')
+        self._finish_refresh()
+
+    def _on_stop_fetched(self, result):
+        """one stop landed.  runs on the gui thread.  repaint right away, so stops appear as
+        they arrive rather than all at once at the end."""
+        self._record_stop_result(result)
+        self._refresh_time()
+        self.rebuild()
+
+    def _on_fetch_finished(self):
+        """the whole cycle landed.  runs on the gui thread."""
+        self._finish_refresh()
+
+    def _stop_fetcher(self):
+        """
+        stop the worker before the app goes away.
+
+        without this, quitting mid-fetch destroys a running QThread, which Qt turns into
+        'QThread: Destroyed while thread is still running' and an abort.
+        """
+        self.timer_refresh.stop()
+        self.timer_stale_data.stop()
+        self.timer_fetch_watchdog.stop()
+
+        if self.fetcher is not None and self.fetcher.isRunning():
+            self.fetcher.requestInterruption()
+
+            # the worker only checks for interruption between stops, so the wait has to cover the
+            # request currently in flight.  our own timeout caps that at request_timeout.
+            if not self.fetcher.wait(int(self.request_timeout * 1000) + 2000):
+                # last resort.  terminate() is ugly, but a QThread still running when it gets
+                # destroyed makes Qt abort the process, which is worse.
+                print('⚠️ background fetch did not stop in time, terminating it')
+                self.fetcher.terminate()
+                self.fetcher.wait(2000)
+
+    def closeEvent(self, event):
+        self._stop_fetcher()
+        super().closeEvent(event)
+
+    def _last_error_summary(self):
+        for name in self.stops_to_monitor:
+            error = self.stop_error.get(name)
+            if error:
+                return error
+        return 'unknown error'
 
 
 
 
     def change_page(self, increment):
+        if self.num_pages_needed <= 1:
+            return
+
         self.current_page = (increment + self.current_page + self.num_pages_needed) % self.num_pages_needed
-        
-        if self.is_data_cleared or (datetime.now()-self.time_last_updated) > timedelta(milliseconds=self.refresh_interval_ms):
+
+        is_stale = (self.time_last_updated is None
+                    or (datetime.now()-self.time_last_updated) > timedelta(milliseconds=self.refresh_interval_ms))
+
+        if self.is_data_cleared or is_stale:
             self.manual_refresh()
         else:
             self.rebuild()
@@ -898,32 +1388,89 @@ class DVB_Monitor(QMainWindow):
 
 
     def rebuild_table(self, stop_ind):
-        if stop_ind >= len(self.stops_to_monitor):
-            return
-
         table_ind = stop_ind % self.num_stops_per_page
-        table = self.tables[table_ind]
-        stop_name = self.stops_to_monitor[stop_ind]
-        self.header_widgets[table_ind].setText(stop_name)
+
+        # init_tables only builds min(num_stops_per_page, len(stops)) tables, so there is not
+        # necessarily a widget for every slot on the page
+        table = self.tables.get(table_ind)
+        if table is None:
+            return
 
         table.clear()
 
-        departures = self.departures[stop_name]
+        # the last page can be partial, in which case this table has no stop at all.  blank it,
+        # rather than leaving the previous page's contents sitting there.
+        if stop_ind >= len(self.stops_to_monitor):
+            self.header_widgets[table_ind].setText('')
+            return
+
+        stop_name = self.stops_to_monitor[stop_ind]
+        self._rebuild_header(table_ind, stop_name)
+
+        # .get, because a stop that has never fetched successfully simply isn't in here
+        departures = self.departures.get(stop_name) or []
 
         num_cols_per_group = len(self.columns)
+
+        if not departures and self.stop_status.get(stop_name) == 'error':
+            # nothing to show and we know why.  say so, rather than leaving an empty grid.
+            # the message goes in the widest column, since a narrow one just renders as mush.
+            widest = max(range(num_cols_per_group), key=lambda ii: self.columns[ii].width)
+            table.set_cell(0, widest, self.stop_error.get(stop_name, 'error'))
+            return
 
         for ii, departure in enumerate(departures[:self.num_departures_to_monitor]):
             row       = ii % self.num_rows_per_table
             col_group = ii // self.num_rows_per_table
 
             for shift, c in enumerate(self.columns):
-                val = c.getter(departure)
+                try:
+                    val = c.getter(departure)
+                except Exception as e:
+                    # one malformed departure costs one cell, not the whole repaint
+                    val = self.error_placeholder
+                    if self.verbosity >= 1:
+                        print(f'⚠️ getter {c.getter.__name__} failed on {stop_name} row {ii}: {e}')
 
                 # account for spacer columns between groups
                 # each group is num_cols_per_group wide, plus 1 spacer column after it
                 grid_col = col_group * (num_cols_per_group + 1) + shift
 
                 table.set_cell(row, grid_col, f'{val}')
+
+    def _rebuild_header(self, table_ind, stop_name):
+        """the stop name, plus how much to trust what is under it."""
+        status = self.stop_status.get(stop_name, 'never')
+        style  = 'haltestelle_header'
+        text   = stop_name
+
+        if status == 'never':
+            text = f'{stop_name} …'
+        elif status == 'error':
+            if self.departures.get(stop_name):
+                text  = f'{stop_name} ⚠️'   # stale data on screen, latest fetch failed
+                style = 'haltestelle_header_stale'
+            else:
+                text  = f'{stop_name} ❌'   # failed, and nothing to fall back on
+                style = 'haltestelle_header_error'
+        else:
+            age = self._stop_age_seconds(stop_name)
+            if age is not None and age > self.stale_data_threshold:
+                text  = f'{stop_name} (stale {int(age)//60}m)'
+                style = 'haltestelle_header_stale'
+
+        w = self.header_widgets[table_ind]
+        w.setText(text)
+        if w.property('class') != style:
+            w.setProperty('class', style)
+            w.style().unpolish(w)
+            w.style().polish(w)
+
+    def _stop_age_seconds(self, stop_name):
+        last = self.stop_last_success.get(stop_name)
+        if last is None:
+            return None
+        return (datetime.now() - last).total_seconds()
 
     def backlight_on(self):
         if self.use_backlight_control:
@@ -963,7 +1510,7 @@ def generate_default_config(path):
     import yaml
 
     # make a copy without the dvb_client_name so user is forced to add it
-    config = DEFAULT_CONFIG.copy()
+    config = copy.deepcopy(DEFAULT_CONFIG)
 
     # add a commented reminder - yaml doesn't support comments via dump,
     # so we write the file manually for the important ones
@@ -998,6 +1545,12 @@ if __name__ == '__main__':
         default=None,
         help='generate a default config file with name of your choice and exit.  Requires an argument.  like `python DVB_Monitor.py --generate-config myconfig.yaml`'
     )
+    parser.add_argument(
+        '--fake-client',
+        default=None,
+        choices=['ok', 'fail', 'mixed', 'empty', 'slow'],
+        help='do not touch the network; use a fake client instead, to eyeball the degraded states'
+    )
     args = parser.parse_args()
 
 
@@ -1006,8 +1559,41 @@ if __name__ == '__main__':
         sys.exit(0)
 
 
+    # PyQt5 turns an unhandled exception in a slot into qFatal()/abort().  this keeps the app
+    # alive and prints instead.  belt and braces only -- the real fixes are the try/excepts
+    # around the api calls themselves.
+    def excepthook(exc_type, exc_value, exc_tb):
+        print('❌ unhandled exception (app kept alive):', file=sys.stderr)
+        traceback.print_exception(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = excepthook
+
+
     app = QApplication(sys.argv)
 
-    ex = DVB_Monitor(app, config_path=args.config)
+    try:
+        if args.fake_client:
+            from fake_dvb_client import make_fake_client
+
+            print(f'⚠️ RUNNING WITH FAKE CLIENT ({args.fake_client}) — NO REAL DATA')
+
+            class FakeClientMonitor(DVB_Monitor):
+                def setup_dvb_client(self):
+                    self.client = make_fake_client(args.fake_client, self.stops_to_monitor)
+
+            ex = FakeClientMonitor(app, config_path=args.config)
+        else:
+            ex = DVB_Monitor(app, config_path=args.config)
+    except SystemExit:
+        raise
+    except RuntimeError as e:
+        # this file raises RuntimeError for "your config is wrong", where a traceback is noise
+        print(f'❌ {e}')
+        sys.exit(2)
+    except Exception as e:
+        print(f'❌ failed to start: {type(e).__name__}: {e}')
+        traceback.print_exc()
+        sys.exit(2)
+
     sys.exit(app.exec_())
     
