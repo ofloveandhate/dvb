@@ -44,6 +44,20 @@ QLabel[class="haltestelle_header"] {
     color: yellow;                      /* text_accent */
 }
 
+/* showing last-known data, but the most recent fetch failed */
+QLabel[class="haltestelle_header_stale"] {
+    font-size: 18pt;
+    font-weight: bold;
+    color: #cc9900;
+}
+
+/* fetch failed and there is nothing to fall back on */
+QLabel[class="haltestelle_header_error"] {
+    font-size: 18pt;
+    font-weight: bold;
+    color: #ff6666;
+}
+
 QLabel[class="body"] {
     font-size: 23pt;
     color: #ffffff;                     /* text_primary */
