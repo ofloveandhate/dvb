@@ -103,7 +103,13 @@ own, because the window width is fixed. If the text outgrows them, the app says 
     off.  Widen it in your config, or reduce font-size in style.css.
 ⚠️  the table is 512px tall but the window is only 400px.  Fixes: reduce font-size in style.css,
     reduce num_rows_per_table (currently 12), or raise window_height.
+⚠️  the table is 520px wide but the window is only 480px.  Fixes: narrow the columns in your
+    config, reduce column_group_spacing (currently 20), or raise window_width.
 ```
+
+The shipped `config*.yaml` files and the `--generate-config` defaults are all sized to fit their
+own windows, so a fresh setup starts silently. If you widen a column or raise a font, these
+warnings tell you what no longer fits.
 
 Only these style classes exist; anything else in a stylesheet is ignored:
 

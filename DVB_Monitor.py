@@ -39,11 +39,16 @@ DEFAULT_CONFIG = {
     "verbosity": 0,
     "refresh_forever": False,
 
+    # widths are in pixels, and have to fit the window: with num_departures_to_monitor=12 and
+    # num_rows_per_table=6 these are laid out as two groups side by side, so the budget is
+    # (window_width - column_group_spacing) / 2 = (480 - 20) / 2 = 230 per group.  these come to
+    # 228.  each is also wide enough for its own heading at the default stylesheet font, which
+    # is what the startup warnings check.
     "columns": [
-        {"header": "#",    "width": 35,  "getter": "get_line",        "alignment": "center", "margin_right": 0, "elide": False},
-        {"header": "",     "width": 30,  "getter": "get_mode_emoji",  "alignment": "left", "margin_right": 0, "elide": False},
-        {"header": "Mins", "width": 30,  "getter": "get_minutes",     "alignment": "right", "margin_right": 0, "elide": False},
-        {"header": "Dest", "width": 140, "getter": "get_destination", "alignment": "left", "margin_right": 0, "elide": True},
+        {"header": "#",    "width": 32,  "getter": "get_line",        "alignment": "center", "margin_right": 0, "elide": False},
+        {"header": "",     "width": 28,  "getter": "get_mode_emoji",  "alignment": "left", "margin_right": 0, "elide": False},
+        {"header": "min",  "width": 40,  "getter": "get_minutes",     "alignment": "right", "margin_right": 0, "elide": False},
+        {"header": "Dest", "width": 128, "getter": "get_destination", "alignment": "left", "margin_right": 0, "elide": True},
     ],
 
     "column_group_spacing": 20,
@@ -922,20 +927,26 @@ class DVB_Monitor(QMainWindow):
         errors = []
         warnings = []
 
-        # compute total column width
+        # compute total column width.  this has to match what StopDisplay._build_grid actually
+        # lays out, gaps included -- it used to leave the gaps out and so passed configs whose
+        # grid was wider than the window.
         col_width_per_group = sum(col.width + col.margin_right for col in self.columns)
         num_cols_needed = math.ceil(self.num_departures_to_monitor / self.num_rows_per_table)
-        total_table_width = col_width_per_group * num_cols_needed
+        total_gap_width = self.column_group_spacing * (num_cols_needed - 1)
+        total_table_width = col_width_per_group * num_cols_needed + total_gap_width
 
         # check table fits in window
         if total_table_width > self.width:
+            gap_note = (f" plus {num_cols_needed - 1} x {self.column_group_spacing}px between groups"
+                        if total_gap_width else "")
             errors.append(
-                f"Table is too wide: {num_cols_needed} column groups x {col_width_per_group}px = "
-                f"{total_table_width}px, but window is only {self.width}px wide.\n"
+                f"Table is too wide: {num_cols_needed} column groups x {col_width_per_group}px"
+                f"{gap_note} = {total_table_width}px, but window is only {self.width}px wide.\n"
                 f"  Possible fixes:\n"
                 f"    - reduce num_departures_to_monitor (currently {self.num_departures_to_monitor})\n"
                 f"    - increase num_rows_per_table (currently {self.num_rows_per_table})\n"
                 f"    - reduce column widths in config\n"
+                f"    - reduce column_group_spacing (currently {self.column_group_spacing})\n"
                 f"    - increase window_width (currently {self.width})"
             )
 
@@ -1136,6 +1147,12 @@ class DVB_Monitor(QMainWindow):
                   f'{self.height}px.  Fixes: reduce font-size in {self.css_file}, '
                   f'reduce num_rows_per_table (currently {self.num_rows_per_table}), '
                   f'or raise window_height.')
+
+        if table.width() > self.width:
+            print(f'⚠️  the table is {table.width()}px wide but the window is only {self.width}px.  '
+                  f'Fixes: narrow the columns in your config, '
+                  f'reduce column_group_spacing (currently {self.column_group_spacing}), '
+                  f'or raise window_width.')
 
         for header, width, needed in table.narrow_columns():
             print(f'⚠️  column "{header}" is {width}px wide but its heading needs {needed}px at '

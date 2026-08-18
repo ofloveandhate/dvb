@@ -875,3 +875,102 @@ def test_the_client_name_file_is_gitignored():
     ignored = open(os.path.join(root, '.gitignore'), encoding='utf-8').read()
 
     assert dm.CLIENT_NAME_FILENAME in ignored
+
+
+# --------------------------------------------------------------------------------------
+# the shipped defaults and configs must fit their own windows
+# --------------------------------------------------------------------------------------
+
+def shipped_config_paths():
+    import glob
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return sorted(glob.glob(os.path.join(root, 'config*.yaml')))
+
+
+def build_from_settings(qapp, tmp_path, name, settings):
+    """Build a monitor from a settings dict, neutralising anything hardware-specific."""
+    import yaml
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    settings = dict(settings)
+    settings.update(
+        use_backlight_control=False,   # no backlight device under pytest
+        is_full_screen=False,
+        is_touch=False,
+        fetch_in_background=False,
+        verbosity=0,
+    )
+    settings.setdefault('css_file', 'style.css')
+    # css_file is resolved relative to the working directory; anchor it to the checkout
+    if not os.path.isabs(settings['css_file']):
+        settings['css_file'] = os.path.join(root, settings['css_file'])
+
+    (tmp_path / dm.CLIENT_NAME_FILENAME).write_text('Me <me@example.com>', encoding='utf-8')
+
+    path = tmp_path / f'{name}.yaml'
+    path.write_text(yaml.safe_dump(settings), encoding='utf-8')
+    return build_monitor(qapp, str(path), FakeClient())
+
+
+def test_the_built_in_defaults_produce_no_size_warnings(qapp, tmp_path):
+    """
+    --generate-config used to emit a config whose "Mins" column was too narrow for the word
+    "Mins", and whose grid was 490px wide in a 480px window.
+    """
+    monitor = build_from_settings(qapp, tmp_path, 'defaults', dm.DEFAULT_CONFIG)
+    table = monitor.tables[0]
+
+    assert table.narrow_columns() == []
+    assert table.width() <= monitor.width
+    assert table.total_height() <= monitor.height
+
+
+@pytest.mark.parametrize('config_path', shipped_config_paths(),
+                         ids=lambda p: os.path.basename(p))
+def test_shipped_configs_produce_no_size_warnings(qapp, tmp_path, config_path):
+    import yaml
+
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(yaml.safe_load(open(config_path, encoding='utf-8')) or {})
+
+    name = os.path.splitext(os.path.basename(config_path))[0]
+    monitor = build_from_settings(qapp, tmp_path, name, settings)
+    table = monitor.tables[0]
+
+    assert table.narrow_columns() == [], f'{name}: columns too narrow for their headings'
+    assert table.width() <= monitor.width, f'{name}: grid wider than the window'
+    assert table.total_height() <= monitor.height, f'{name}: grid taller than the window'
+
+
+def test_width_validation_counts_the_gaps_between_column_groups(qapp, tmp_path):
+    """
+    validate_config used to ignore column_group_spacing, so it approved configs whose grid was
+    genuinely wider than the window -- which is how the bad default shipped.
+    """
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(
+        num_departures_to_monitor=12,
+        num_rows_per_table=6,          # -> two column groups, so one gap
+        column_group_spacing=200,      # gaps alone now overflow the window
+        window_width=480,
+    )
+
+    with pytest.raises(SystemExit):
+        build_from_settings(qapp, tmp_path, 'gappy', settings)
+
+
+def test_a_config_that_fits_exactly_is_accepted(qapp, tmp_path):
+    """The gap accounting must not be off by one in the rejecting direction."""
+    settings = dict(dm.DEFAULT_CONFIG)
+    columns = [{'header': 'A', 'width': 100, 'getter': 'get_line', 'alignment': 'left'}]
+    settings.update(
+        columns=columns,
+        num_departures_to_monitor=12,
+        num_rows_per_table=6,          # two groups
+        column_group_spacing=20,
+        window_width=220,              # 100 + 100 + 20, exactly
+    )
+
+    monitor = build_from_settings(qapp, tmp_path, 'exact', settings)
+
+    assert monitor.tables[0].width() == 220
