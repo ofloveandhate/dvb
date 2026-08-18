@@ -12,6 +12,10 @@ consecutive_autorefresh_timeout_threshold: 10
 refresh_interval: 60          # seconds
 clear_interval: 120           # seconds
 
+# the PiTFT is exactly 480x320 physical pixels, so these numbers are the hardware itself,
+# not sizes to be scaled to a screen.  pin the scaling off so it stays that way.
+scale_with_screen_dpi: false
+
 window_width: 480 # in pixels
 window_height: 320  # PiTFT Plus': [0, 0, 480, 320] #https://www.adafruit.com/product/2441
 

@@ -111,6 +111,26 @@ The shipped `config*.yaml` files and the `--generate-config` defaults are all si
 own windows, so a fresh setup starts silently. If you widen a column or raise a font, these
 warnings tell you what no longer fits.
 
+### High-DPI screens
+
+Font sizes in the stylesheets are in `pt`, which Qt converts to pixels using your screen's DPI.
+Every size in a config file is in pixels, which it does not. On a 192dpi laptop that means the
+text comes out twice the size while the columns stay put -- rows overflow, and destinations get
+cut off.
+
+So config pixel sizes are treated as being written for a 96dpi screen, and scaled to whatever you
+actually have. On an ordinary display nothing changes. On a 192dpi one, a `window_width: 550`
+window is built 1100px wide, and every column, row and gap grows to match, so the layout keeps
+its proportions and its physical size.
+
+| setting | default | meaning |
+| --- | --- | --- |
+| `scale_with_screen_dpi` | true | scale config pixel sizes to the screen |
+| `reference_dpi` | 96 | the DPI those pixel sizes were written for |
+
+Set `scale_with_screen_dpi: false` when the numbers *are* the hardware and must be taken
+literally -- `config_pitft.yaml` does this, because the PiTFT is exactly 480x320 physical pixels.
+
 Only these style classes exist; anything else in a stylesheet is ignored:
 
 | class | what it is |

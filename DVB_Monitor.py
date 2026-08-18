@@ -68,6 +68,12 @@ DEFAULT_CONFIG = {
 
     "css_file": "style.css",
 
+    # pixel sizes in a config are written for a REFERENCE_DPI screen and scaled to whatever you
+    # actually have, so the layout keeps up with the pt font sizes in the stylesheet.
+    # set scale_with_screen_dpi to false to take the numbers literally.
+    "scale_with_screen_dpi": True,
+    "reference_dpi":         96,
+
     # --- network robustness ---
     "request_timeout":          8,     # seconds to wait for the response body.  dvb's own default is 15.
     "request_connect_timeout":  4,     # seconds to wait for the tcp connection
@@ -126,6 +132,33 @@ Column = namedtuple("Column", ["header", "width", "getter", "alignment", "margin
 # information, so it does NOT belong in a config file you commit -- keep it in this file instead,
 # which is gitignored.
 CLIENT_NAME_FILENAME = 'dvb_client_name.txt'
+
+
+# Every pixel size in a config file -- window size, row height, column widths -- is written as if
+# the screen were REFERENCE_DPI.  Font sizes in the stylesheets are in pt, which Qt converts to
+# pixels using the screen's DPI, so on a high-DPI screen the text doubles while a hard-coded pixel
+# width does not.  That mismatch is what made rows overflow and destinations get truncated.
+# Scaling the pixel sizes by the same factor keeps the two in proportion at any DPI.
+REFERENCE_DPI = 96.0
+
+
+def layout_scale_factor(screen, reference_dpi=REFERENCE_DPI, enabled=True):
+    """how much to multiply config pixel sizes by, for this screen.  1.0 on an ordinary display."""
+    if not enabled or screen is None:
+        return 1.0
+
+    try:
+        dpi = float(screen.logicalDotsPerInch())
+    except Exception:
+        return 1.0
+
+    if dpi <= 0 or reference_dpi <= 0:
+        return 1.0
+
+    scale = dpi / reference_dpi
+
+    # a screen claiming something absurd shouldn't produce an unusable window
+    return min(max(scale, 0.5), 4.0)
 
 
 def read_client_name_file(path):
@@ -735,6 +768,10 @@ class DVB_Monitor(QMainWindow):
         self.refresh_interval_ms = self.refresh_interval * 1000
         self.clear_interval_ms = self.clear_interval * 1000
 
+    def scaled_px(self, value):
+        """a pixel size from the config, in this screen's pixels."""
+        return int(round(value * self.layout_scale))
+
     def setup_dvb_client(self):
         # the core of this display.  use this object to make queries into the DVB api.
         self.client = dvb.Client(user_agent=self.dvb_client_name)
@@ -825,10 +862,24 @@ class DVB_Monitor(QMainWindow):
         # then overwrite with the items from the user's yaml file
         config.update(user_config)
 
+        # work out the screen scale before reading any pixel size, so every one of them can be
+        # scaled on the way in and the rest of the app can stay in plain pixels
+        self.verbosity = config["verbosity"]
+        self.scale_with_screen_dpi = bool(config["scale_with_screen_dpi"])
+        self.reference_dpi = float(config["reference_dpi"]) or REFERENCE_DPI
+
+        screen = self.app.primaryScreen() if self.app is not None else None
+        self.layout_scale = layout_scale_factor(screen, self.reference_dpi, self.scale_with_screen_dpi)
+
+        if self.verbosity >= 1 and abs(self.layout_scale - 1.0) > 0.01:
+            dpi = screen.logicalDotsPerInch() if screen else self.reference_dpi
+            print(f'ℹ️ screen reports {dpi:.0f} dpi, so pixel sizes from your config are scaled '
+                  f'by {self.layout_scale:.2f} to keep up with the fonts')
+
         # finally, set the values of internal things from the YAML file.
         # i forbid myself to use `eval`.
         self.stops_to_monitor = config["stops_to_monitor"]
-        self.row_height = config["row_height"]
+        self.row_height = self.scaled_px(config["row_height"])
         self.num_rows_per_table = config["num_rows_per_table"]
         self.num_stops_per_page = config["num_stops_per_page"]
         self.consecutive_autorefresh_timeout_threshold = config["consecutive_autorefresh_timeout_threshold"]
@@ -836,8 +887,8 @@ class DVB_Monitor(QMainWindow):
         self.refresh_interval = config["refresh_interval"]
         self.clear_interval = config["clear_interval"]
 
-        self.width = config["window_width"]
-        self.height = config["window_height"]
+        self.width = self.scaled_px(config["window_width"])
+        self.height = self.scaled_px(config["window_height"])
         self.left = config["window_loc_x"]
         self.top = config["window_loc_y"]
 
@@ -857,21 +908,19 @@ class DVB_Monitor(QMainWindow):
 
             self.columns.append(Column(
                 header      = col["header"],
-                width       = col["width"],
+                width       = self.scaled_px(col["width"]),
                 getter      = GETTER_REGISTRY[getter_name],
                 alignment   = ALIGNMENT_REGISTRY[alignment_name],
-                margin_right= col.get("margin_right", 0),
+                margin_right= self.scaled_px(col.get("margin_right", 0)),
                 elide       = col.get("elide", False),  # default to False
             ))
 
-        self.column_group_spacing = config["column_group_spacing"]
+        self.column_group_spacing = self.scaled_px(config["column_group_spacing"])
 
         self.mock_update = config["mock_update"]
         self.title = config["window_title"]
 
         self.num_departures_to_monitor = config["num_departures_to_monitor"]
-
-        self.verbosity = config["verbosity"]
 
         self.is_full_screen = config["is_full_screen"]
         self.is_touch = config["is_touch"]
@@ -1052,9 +1101,12 @@ class DVB_Monitor(QMainWindow):
         self.shortcut_refresh = QShortcut(QKeySequence(Qt.Key_Up), self)
         self.shortcut_refresh.activated.connect(self.manual_refresh)
 
+        # constructing it with central_widget already installs it there.  calling
+        # self.setLayout() as well made Qt print "Attempting to set QLayout on DVB_Monitor,
+        # which already has a layout" on every start, and did nothing -- a QMainWindow manages
+        # its own layout and the content belongs to the central widget.
         self.main_layout = QVBoxLayout(central_widget)
         self.main_layout.setContentsMargins(0, 0, 0, 0)  # This removes padding around the layout
-        self.setLayout(self.main_layout)
         
         self.init_tables()
         self.setup_bottom()
