@@ -1,100 +1,87 @@
 /*
- * ============================================================
- * COLOR PALETTE - change values here, they are used throughout
- * ============================================================
+ * DVB Monitor - default stylesheet
  *
- * background_dark:    #1a1a1a   main background
- * background_medium:  #333333   raised elements eg buttons, grid header
- * background_light:   #555555   hover, pressed states
- * border_color:       #555555   borders
- * border_dark:        #2a2a2a   subtle borders eg grid cells
- * text_primary:       #ffffff   main text
- * text_accent:        yellow    highlighted text eg stop name
- * background_black:   #000000   deepest background
- * background_accent:  blue      accent background eg header
- * ============================================================
+ * This is Qt's stylesheet language (QSS). It looks like CSS, but it is not CSS:
+ * there are no variables, so colours are written out in full each time.
+ *
+ * The four rules under "THE KNOBS" are the ones worth changing first.
+ * Everything below them is chrome you can mostly ignore.
+ *
+ * Rows grow to fit whatever font-size you set here, so making the text bigger
+ * Just Works. Column WIDTHS are not set here though - those live in the
+ * `columns:` section of your config.yaml. If you make the text much bigger, the
+ * app will tell you on startup which columns have become too narrow.
  */
 
-QGroupBox {
-    background-color: #000000;          /* background_black */
+
+/* ============================================================
+ * THE KNOBS
+ * ============================================================ */
+
+/* the departure rows: line number, destination, minutes */
+QLabel[class="grid_cell"] {
+    font-size: 12pt;
+    color: #ffffff;
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    padding: 2px;
 }
 
-QMainWindow {
-    background-color: #1a1a1a;         /* background_dark */
+/* the "# / Dest / t" headings above the departures */
+QLabel[class="grid_header"] {
+    font-size: 12pt;
+    font-weight: bold;
+    color: #ffffff;
+    background-color: #333333;
+    border: 1px solid #555555;
+    padding: 2px;
 }
 
-QWidget {
-    background-color: #1a1a1a;         /* background_dark */
-}
-
-QLabel[class="header"] {
-    font-size: 27pt;
-    color: #ffffff;                     /* text_primary */
-    background-color: blue;             /* background_accent */
-}
-
-QLabel[class="title"] {
-    font-size: 24pt;
-    color: #ffffff;                     /* text_primary */
-}
-
+/* the stop name above each table */
 QLabel[class="haltestelle_header"] {
     font-size: 18pt;
     font-weight: bold;
-    color: yellow;                      /* text_accent */
+    color: yellow;
 }
 
-/* showing last-known data, but the most recent fetch failed */
+/* the timestamp line along the bottom */
+QLabel[class="footer"] {
+    font-size: 8pt;
+    color: #ffffff;
+}
+
+
+/* ============================================================
+ * EVERYTHING ELSE
+ * ============================================================ */
+
+/* the window itself */
+QMainWindow, QWidget {
+    background-color: #1a1a1a;
+}
+
+/* the refresh button, and the prev/next buttons when you monitor enough stops */
+QPushButton {
+    background-color: #333333;
+    color: #ffffff;
+    border: 1px solid #555555;
+    padding: 4px;
+}
+
+QPushButton:pressed {
+    background-color: #555555;
+}
+
+/* stop name when the API failed but old departures are still on screen */
 QLabel[class="haltestelle_header_stale"] {
     font-size: 18pt;
     font-weight: bold;
     color: #cc9900;
 }
 
-/* fetch failed and there is nothing to fall back on */
+/* stop name when the API failed and there is nothing left to show */
 QLabel[class="haltestelle_header_error"] {
     font-size: 18pt;
     font-weight: bold;
     color: #ff6666;
 }
-
-QLabel[class="body"] {
-    font-size: 23pt;
-    color: #ffffff;                     /* text_primary */
-}
-
-QLabel[class="footer"] {
-    font-size: 8pt;
-    color: #ffffff;                     /* text_primary */
-}
-
-QLabel[class="grid_header"] {
-    font-weight: bold;
-    background-color: #333333;          /* background_medium */
-    color: #ffffff;                     /* text_primary */
-    border: 1px solid #555555;          /* border_color */
-    padding: 2px;
-}
-
-QLabel[class="grid_cell"] {
-    background-color: #1a1a1a;         /* background_dark */
-    color: #ffffff;                     /* text_primary */
-    border: 1px solid #2a2a2a;          /* border_dark */
-    padding: 2px;
-}
-
-QPushButton {
-    background-color: #333333;          /* background_medium */
-    color: #ffffff;                     /* text_primary */
-    border: 1px solid #555555;          /* border_color */
-    padding: 4px;
-}
-
-QPushButton:pressed {
-    background-color: #555555;          /* background_light */
-}
-
-QTableWidget::item:selected {}
-QTableWidget::item:hover {}
-QHeaderView::section {}
-QTableWidget::corner {}

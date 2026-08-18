@@ -150,12 +150,29 @@ def config_path(tmp_path):
     return str(path)
 
 
+# widgets built during a test.  without explicit teardown, python garbage collects them at
+# interpreter shutdown while Qt is tearing the QApplication down, which segfaults now and then.
+_monitors = []
+
+
+@pytest.fixture(autouse=True)
+def _close_monitors(qapp):
+    yield
+    while _monitors:
+        monitor = _monitors.pop()
+        monitor._stop_fetcher()
+        monitor.close()
+        monitor.deleteLater()
+    qapp.processEvents()
+
+
 def build_monitor(qapp, config_path, client):
     class TestableMonitor(dm.DVB_Monitor):
         def setup_dvb_client(self):
             self.client = client
 
     monitor = TestableMonitor(qapp, config_path=config_path)
+    _monitors.append(monitor)
     return monitor
 
 
@@ -562,3 +579,152 @@ def test_watchdog_reschedules_a_fetch_that_never_reports(qapp, background_config
     monitor._on_fetch_watchdog()
 
     assert monitor.timer_refresh.isActive()
+
+
+# --------------------------------------------------------------------------------------
+# stylesheet / layout
+# --------------------------------------------------------------------------------------
+
+def write_config(tmp_path, name, css, **overrides):
+    """A config pointing at a stylesheet written just for this test."""
+    import yaml
+    css_path = tmp_path / f'{name}.css'
+    css_path.write_text(css, encoding='utf-8')
+
+    config = {
+        'dvb_client_name': 'pytest <test@example.com>',
+        'stops_to_monitor': ['Altmarkt'],
+        'num_stops_per_page': 1,
+        'num_rows_per_table': 6,
+        'num_departures_to_monitor': 6,
+        'row_height': 30,
+        'window_width': 1300,
+        'window_height': 900,
+        'css_file': str(css_path),
+        'fetch_in_background': False,
+        'verbosity': 0,
+    }
+    config.update(overrides)
+
+    path = tmp_path / f'{name}.yaml'
+    path.write_text(yaml.safe_dump(config), encoding='utf-8')
+    return str(path)
+
+
+def css_with_cell_font(points):
+    return f'''
+QLabel[class="grid_cell"] {{
+    font-size: {points}pt;
+    color: #ffffff;
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    padding: 2px;
+}}
+QLabel[class="grid_header"] {{ font-size: {points}pt; }}
+'''
+
+
+def test_rows_grow_to_fit_a_larger_font(qapp, tmp_path):
+    """Raising font-size used to clip the text, because cells were pinned to row_height."""
+    small = build_monitor(qapp, write_config(tmp_path, 'small', css_with_cell_font(10)), FakeClient())
+    big   = build_monitor(qapp, write_config(tmp_path, 'big',   css_with_cell_font(28)), FakeClient())
+
+    assert big.tables[0].effective_row_height > small.tables[0].effective_row_height
+
+
+def test_row_height_from_config_is_a_minimum(qapp, tmp_path):
+    """A tiny font must not shrink the rows below what the config asked for."""
+    monitor = build_monitor(qapp, write_config(tmp_path, 'tiny', css_with_cell_font(6)), FakeClient())
+
+    assert monitor.tables[0].effective_row_height == 30
+
+
+def test_a_large_font_actually_fits_its_row(qapp, tmp_path):
+    """The whole point: the glyphs must fit inside the cell, not get guillotined."""
+    from PyQt5.QtGui import QFontMetrics
+
+    monitor = build_monitor(qapp, write_config(tmp_path, 'fits', css_with_cell_font(28)), FakeClient())
+    monitor.refresh()
+
+    cell = monitor.tables[0].labels[(0, 0)]
+    assert QFontMetrics(cell.font()).height() <= cell.height()
+
+
+def test_narrow_columns_are_reported(qapp, tmp_path):
+    """Column widths come from config and can't auto-grow, so they get reported instead."""
+    path = write_config(tmp_path, 'narrow', css_with_cell_font(28), columns=[
+        {'header': 'Destination', 'width': 20, 'getter': 'get_destination', 'alignment': 'left'},
+    ])
+    monitor = build_monitor(qapp, path, FakeClient())
+
+    reported = monitor.tables[0].narrow_columns()
+
+    assert [name for name, _, _ in reported] == ['Destination']
+
+
+def test_wide_enough_columns_are_not_reported(qapp, tmp_path):
+    path = write_config(tmp_path, 'wide', css_with_cell_font(10), columns=[
+        {'header': 'Dest', 'width': 300, 'getter': 'get_destination', 'alignment': 'left'},
+    ])
+    monitor = build_monitor(qapp, path, FakeClient())
+
+    assert monitor.tables[0].narrow_columns() == []
+
+
+def test_elided_label_shortens_but_remembers_the_full_text(qapp):
+    label = dm.ElidedLabel('Wilder Mann via Somewhere Long')
+    label.setFixedWidth(60)
+    label.show()
+    qapp.processEvents()
+
+    assert label.text() == 'Wilder Mann via Somewhere Long'   # what was set
+    assert '…' in dm.QLabel.text(label)                        # what is on screen
+    label.close()
+
+
+def test_elided_label_leaves_short_text_alone(qapp):
+    label = dm.ElidedLabel('Ok')
+    label.setFixedWidth(300)
+    label.show()
+    qapp.processEvents()
+
+    assert dm.QLabel.text(label) == 'Ok'
+    label.close()
+
+
+def test_elided_cells_still_render_through_the_stylesheet(qapp, tmp_path):
+    """
+    Elided columns used to paint their own text and so never drew the css background/border,
+    leaving them visibly transparent next to every other column.
+    """
+    path = write_config(tmp_path, 'elide', css_with_cell_font(12), columns=[
+        {'header': 'Dest', 'width': 60, 'getter': 'get_destination',
+         'alignment': 'left', 'elide': True},
+    ])
+    monitor = build_monitor(qapp, path, FakeClient())
+    monitor.refresh()
+
+    cell = monitor.tables[0].labels[(0, 0)]
+
+    assert isinstance(cell, dm.ElidedLabel)
+    # QLabel does the painting now, rather than a custom paintEvent that skipped the background
+    assert 'paintEvent' not in dm.ElidedLabel.__dict__
+    # and the text really is being shortened to fit
+    assert '…' in dm.QLabel.text(cell)
+
+
+def test_stylesheets_shipped_with_the_app_only_style_classes_that_exist(qapp):
+    """
+    style.css used to define header/title/body rules that were never applied to any widget, so
+    editing them did nothing at all.  Keep the shipped stylesheets honest.
+    """
+    import re
+
+    applied = {'grid_cell', 'grid_header', 'haltestelle_header',
+               'haltestelle_header_stale', 'haltestelle_header_error', 'footer'}
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for name in ('style.css', 'style_pitft.css'):
+        css = open(os.path.join(root, name), encoding='utf-8').read()
+        defined = set(re.findall(r'class="([^"]+)"', css))
+        assert defined <= applied, f'{name} styles classes no widget ever gets: {defined - applied}'

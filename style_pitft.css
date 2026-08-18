@@ -1,100 +1,86 @@
 /*
- * ============================================================
- * COLOR PALETTE - change values here, they are used throughout
- * ============================================================
+ * DVB Monitor - stylesheet for the Adafruit PiTFT (480x320)
  *
- * background_dark:    #1a1a1a   main background
- * background_medium:  #333333   raised elements eg buttons, grid header
- * background_light:   #555555   hover, pressed states
- * border_color:       #555555   borders
- * border_dark:        #2a2a2a   subtle borders eg grid cells
- * text_primary:       #ffffff   main text
- * text_accent:        yellow    highlighted text eg stop name
- * background_black:   #000000   deepest background
- * background_accent:  blue      accent background eg header
- * ============================================================
+ * Same rules as style.css, retuned for a small screen you read from arm's length:
+ * bigger departure text, and everything around it shrunk to make room for it.
+ *
+ * There is very little spare height here. 13pt is the largest departure text
+ * that still fits 6 rows, a heading, the timestamp and the buttons into 320px.
+ * Go bigger and the bottom will be cut off - the app prints a warning on
+ * startup when the table no longer fits the window.
+ *
+ * See style.css for the fuller commentary; this file is the same rules with
+ * different numbers.
  */
 
-QGroupBox {
-    background-color: #000000;          /* background_black */
+
+/* ============================================================
+ * THE KNOBS
+ * ============================================================ */
+
+/* the departure rows. the whole point of the screen, so it gets the space. */
+QLabel[class="grid_cell"] {
+    font-size: 13pt;
+    color: #ffffff;
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    padding: 2px;
 }
 
-QMainWindow {
-    background-color: #1a1a1a;         /* background_dark */
-}
-
-QWidget {
-    background-color: #1a1a1a;         /* background_dark */
-}
-
-QLabel[class="header"] {
-    font-size: 27pt;
-    color: #ffffff;                     /* text_primary */
-    background-color: blue;             /* background_accent */
-}
-
-QLabel[class="title"] {
-    font-size: 24pt;
-    color: #ffffff;                     /* text_primary */
-}
-
-QLabel[class="haltestelle_header"] {
-    font-size: 18pt;
+/* the "# / Dest / t" headings. small, they only need to be readable once. */
+QLabel[class="grid_header"] {
+    font-size: 9pt;
     font-weight: bold;
-    color: yellow;                      /* text_accent */
+    color: #ffffff;
+    background-color: #333333;
+    border: 1px solid #555555;
+    padding: 2px;
 }
 
-/* showing last-known data, but the most recent fetch failed */
+/* the stop name. smaller than on the desktop, to buy rows their height back. */
+QLabel[class="haltestelle_header"] {
+    font-size: 13pt;
+    font-weight: bold;
+    color: yellow;
+}
+
+/* the timestamp line. as small as stays legible. */
+QLabel[class="footer"] {
+    font-size: 7pt;
+    color: #ffffff;
+}
+
+
+/* ============================================================
+ * EVERYTHING ELSE
+ * ============================================================ */
+
+QMainWindow, QWidget {
+    background-color: #1a1a1a;
+}
+
+/* generous padding: these are touch targets on the PiTFT, not mouse targets */
+QPushButton {
+    background-color: #333333;
+    color: #ffffff;
+    border: 1px solid #555555;
+    padding: 6px;
+}
+
+QPushButton:pressed {
+    background-color: #555555;
+}
+
+/* stop name when the API failed but old departures are still on screen */
 QLabel[class="haltestelle_header_stale"] {
-    font-size: 18pt;
+    font-size: 13pt;
     font-weight: bold;
     color: #cc9900;
 }
 
-/* fetch failed and there is nothing to fall back on */
+/* stop name when the API failed and there is nothing left to show */
 QLabel[class="haltestelle_header_error"] {
-    font-size: 18pt;
+    font-size: 13pt;
     font-weight: bold;
     color: #ff6666;
 }
-
-QLabel[class="body"] {
-    font-size: 23pt;
-    color: #ffffff;                     /* text_primary */
-}
-
-QLabel[class="footer"] {
-    font-size: 8pt;
-    color: #ffffff;                     /* text_primary */
-}
-
-QLabel[class="grid_header"] {
-    font-weight: bold;
-    background-color: #333333;          /* background_medium */
-    color: #ffffff;                     /* text_primary */
-    border: 1px solid #555555;          /* border_color */
-    padding: 2px;
-}
-
-QLabel[class="grid_cell"] {
-    background-color: #1a1a1a;         /* background_dark */
-    color: #ffffff;                     /* text_primary */
-    border: 1px solid #2a2a2a;          /* border_dark */
-    padding: 2px;
-}
-
-QPushButton {
-    background-color: #333333;          /* background_medium */
-    color: #ffffff;                     /* text_primary */
-    border: 1px solid #555555;          /* border_color */
-    padding: 4px;
-}
-
-QPushButton:pressed {
-    background-color: #555555;          /* background_light */
-}
-
-QTableWidget::item:selected {}
-QTableWidget::item:hover {}
-QHeaderView::section {}
-QTableWidget::corner {}
