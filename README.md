@@ -2,13 +2,35 @@
 
 ## How to use
 
-Simply run the Python code. 
+Two steps:
 
-- Make sure that `config.yaml` is at the current path; suggested to derive from the one in this repo.
-- You'll also need to add a string value to `config.yaml`.  They setting name is `dvb_client_name`, and the value is the name of your app and your contact information.  This is required by DVB.  See [the dvb package documentation](https://pypi.org/project/dvb/)
+**1. Tell DVB who you are.** They require every client to identify itself with a name and a
+contact address. Put yours in `dvb_client_name.txt`, next to `DVB_Monitor.py`:
 
-Point it at a different config with `--config myconfig.yaml`, or write a fresh one with
-`--generate-config myconfig.yaml`.
+```
+echo 'DVB Monitor - your name <you@example.com>' > dvb_client_name.txt
+```
+
+That file is gitignored, so your contact details stay out of the repo no matter what you commit.
+See [the dvb package documentation](https://pypi.org/project/dvb/) for what they expect.
+
+**2. Run it.** `config.yaml` is read from the current directory by default; point somewhere else
+with `--config myconfig.yaml`, or write a fresh one with `--generate-config myconfig.yaml`.
+
+Because your contact details are not in it, every `config.yaml` in this repo is safe to commit
+and to share.
+
+### Where the client name is looked up
+
+In order, first hit wins:
+
+1. `dvb_client_name.txt` beside the config file you are using
+2. `dvb_client_name.txt` beside `DVB_Monitor.py` -- the usual case, one file shared by every
+   config in your checkout
+3. a `dvb_client_name:` entry in the config file itself
+
+The third is only kept so that setups predating the separate file keep working. Prefer the file;
+a config with your email in it is a config you cannot share.
 
 ## Installation
 

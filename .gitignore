@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# your DVB contact details.  personal, and deliberately not committed.
+dvb_client_name.txt

@@ -117,6 +117,82 @@ _warned_modes = set()
 
 Column = namedtuple("Column", ["header", "width", "getter", "alignment", "margin_right", "elide"])
 
+# DVB asks every client to identify itself with a name and contact address.  that is personal
+# information, so it does NOT belong in a config file you commit -- keep it in this file instead,
+# which is gitignored.
+CLIENT_NAME_FILENAME = 'dvb_client_name.txt'
+
+
+def read_client_name_file(path):
+    """the first meaningful line of a client name file, or None if there isn't one."""
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    return line
+    except OSError:
+        return None
+
+    return None
+
+
+def client_name_search_path(config_path):
+    """
+    where to look for dvb_client_name.txt, most specific first: beside the config file being
+    used, then beside this script.  the second is the usual case -- one file in your checkout,
+    shared by every config you keep there.
+    """
+    candidates = []
+
+    config_dir = os.path.dirname(os.path.abspath(config_path)) if config_path else None
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    for directory in (config_dir, script_dir):
+        if directory and directory not in candidates:
+            candidates.append(directory)
+
+    return [os.path.join(directory, CLIENT_NAME_FILENAME) for directory in candidates]
+
+
+def find_client_name(search_path, config_value=None, verbosity=0):
+    """
+    resolve the DVB client name.  a dvb_client_name.txt anywhere on the search path wins;
+    a dvb_client_name entry in the config file is honoured as a fallback, for setups that
+    predate the separate file.  returns None if nothing supplied one.
+    """
+    for path in search_path:
+        name = read_client_name_file(path)
+        if name:
+            if verbosity >= 1:
+                print(f'ℹ️ using the DVB client name from {path}')
+            return name
+
+    if config_value:
+        if verbosity >= 1:
+            print('ℹ️ using the DVB client name from your config file')
+        return config_value
+
+    return None
+
+
+def missing_client_name_message(search_path):
+    preferred = search_path[-1] if search_path else CLIENT_NAME_FILENAME
+
+    return (
+        "no DVB client name found.\n"
+        "\n"
+        "  DVB asks every client to identify itself with a name and contact address.\n"
+        "  It is yours, so it is kept out of the repo rather than in a config file.\n"
+        "\n"
+        "  Create it with:\n"
+        f"      echo 'DVB Monitor - your name <you@example.com>' > {preferred}\n"
+        "\n"
+        f"  ({CLIENT_NAME_FILENAME} is gitignored, so it will not be committed.)\n"
+        "  A dvb_client_name: entry in your config file also still works."
+    )
+
+
 # the border and padding the stylesheet asks of grid cells.  used to work out how tall a row has
 # to be for a given font, so that raising font-size in the css doesn't clip the text.
 # keep these in step with the `border` and `padding` in style.css.
@@ -734,8 +810,6 @@ class DVB_Monitor(QMainWindow):
                       f"got {type(user_config).__name__}")
                 sys.exit(-12039)
 
-            if "dvb_client_name" not in user_config:
-                raise RuntimeError("required entry `dvb_client_name` not found in your `config.yaml` file.  Add it.")
             return user_config
 
         user_config = load_config(path)
@@ -827,9 +901,18 @@ class DVB_Monitor(QMainWindow):
         global UNKNOWN_MODE_EMOJI
         UNKNOWN_MODE_EMOJI = config["unknown_mode_emoji"]
 
-        self.dvb_client_name = config["dvb_client_name"]  # there should be no default for this, because the user is supposed to give contact into in this strong.
+        # deliberately not in DEFAULT_CONFIG: there can be no default for someone's contact
+        # details.  it comes from dvb_client_name.txt, or from the config file for setups that
+        # predate that.
+        self.client_name_search_path = client_name_search_path(path)
+        self.dvb_client_name = find_client_name(
+            self.client_name_search_path,
+            config_value = config.get("dvb_client_name"),
+            verbosity    = self.verbosity,
+        )
+
         if not self.dvb_client_name:
-            raise RuntimeError('dvb_client_name must not be blank')
+            raise RuntimeError(missing_client_name_message(self.client_name_search_path))
 
         if self.mock_update:
             print('ℹ️ `mock_update` is set to true, which is good for development, but bad for actual use.  set to false so it actually updates data')
@@ -1631,7 +1714,6 @@ class DVB_Monitor(QMainWindow):
 def generate_default_config(path):
     import yaml
 
-    # make a copy without the dvb_client_name so user is forced to add it
     config = copy.deepcopy(DEFAULT_CONFIG)
 
     # add a commented reminder - yaml doesn't support comments via dump,
@@ -1640,8 +1722,9 @@ def generate_default_config(path):
         f.write("# DVB Monitor configuration file\n")
         f.write("# generated by DVB_Monitor.py --generate-config\n")
         f.write("\n")
-        f.write("# REQUIRED: set this to your contact info for the DVB api\n")
-        f.write("dvb_client_name: your_name_or_email_here\n")
+        f.write("# Your DVB client name does NOT go in here -- it is your contact information,\n")
+        f.write(f"# so it lives in {CLIENT_NAME_FILENAME}, which is gitignored.  This file is\n")
+        f.write("# therefore safe to commit and share.\n")
         f.write("\n")
         f.write("# REQUIRED: set this to your stop name(s)\n")
         f.write("# stops_to_monitor:\n")
@@ -1652,7 +1735,11 @@ def generate_default_config(path):
         yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
 
     print(f"✅ default config written to {path}")
-    print(f"⚠️  edit '{path}' and set dvb_client_name before running")
+    print(f"ℹ️  edit '{path}' and set stops_to_monitor")
+
+    if not find_client_name(client_name_search_path(path)):
+        print()
+        print(f"⚠️  {missing_client_name_message(client_name_search_path(path))}")
 
 
 if __name__ == '__main__':
