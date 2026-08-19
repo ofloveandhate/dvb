@@ -1151,3 +1151,111 @@ def test_shipped_configs_fit_the_whole_window(qapp, tmp_path, config_path):
         f'{name}: contents need {needed.height()}px but window_height is {monitor.height}')
     assert needed.width() <= monitor.width, (
         f'{name}: contents need {needed.width()}px but window_width is {monitor.width}')
+
+
+# --------------------------------------------------------------------------------------
+# the refresh button, and waking from sleep
+# --------------------------------------------------------------------------------------
+
+def test_refresh_button_does_not_stretch_across_the_window(qapp, tmp_path):
+    """
+    With no stops to page between there are no nav buttons, and the refresh button used to
+    spread across the entire window.
+    """
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(stops_to_monitor=['Altmarkt'], num_stops_per_page=1, window_width=1300)
+
+    monitor = build_from_settings(qapp, tmp_path, 'lonely_refresh', settings)
+    monitor.show()
+    qapp.processEvents()
+
+    assert 'prev' not in monitor.buttons and 'next' not in monitor.buttons
+    assert monitor.buttons['refresh'].width() <= monitor.refresh_button_width
+    assert monitor.buttons['refresh'].width() < monitor.width / 4
+
+
+def test_nav_buttons_get_the_room_the_refresh_button_does_not(qapp, tmp_path):
+    """Prev/next carry stop names and should take the width; the glyph should not."""
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(stops_to_monitor=['Altmarkt', 'Postplatz', 'Pirnaischer Platz'],
+                    num_stops_per_page=1, window_width=1300)
+
+    monitor = build_from_settings(qapp, tmp_path, 'nav_room', settings)
+    monitor.show()
+    qapp.processEvents()
+
+    assert monitor.buttons['prev'].width() > monitor.buttons['refresh'].width()
+    assert monitor.buttons['next'].width() > monitor.buttons['refresh'].width()
+
+
+def test_the_refresh_button_never_clips_its_glyph(qapp, tmp_path):
+    """A silly-small configured width must not cut the icon in half."""
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(stops_to_monitor=['Altmarkt'], refresh_button_width=1)
+
+    monitor = build_from_settings(qapp, tmp_path, 'tiny_refresh', settings)
+
+    assert monitor.buttons['refresh'].width() >= monitor.buttons['refresh'].sizeHint().width()
+
+
+def sleeping_monitor(qapp, tmp_path, client):
+    """A monitor with backlight control, driven into the slept state."""
+    backlight = tmp_path / 'brightness'
+    backlight.write_text('1', encoding='utf-8')
+
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(stops_to_monitor=['Altmarkt'], num_stops_per_page=1,
+                    refresh_forever=False)
+
+    monitor = build_from_settings(qapp, tmp_path, 'sleepy', settings)
+    # switched on after construction, so validate_config does not demand the path up front
+    monitor.use_backlight_control = True
+    monitor.backlight_path = str(backlight)
+    return monitor
+
+
+def test_waking_from_sleep_refreshes_without_a_button_press(qapp, tmp_path):
+    """
+    The screen only sleeps after clear_stale_data has discarded the departures, so waking onto
+    an empty table and waiting to be asked again is no use.
+    """
+    client = FakeClient()
+    monitor = sleeping_monitor(qapp, tmp_path, client)
+    monitor.client = client
+
+    monitor.refresh()
+    assert monitor.departures['Altmarkt']
+
+    monitor.clear_stale_data()          # what the stale timer does
+    assert monitor.departures == {}
+    assert monitor.is_backlight_off
+
+    woke = monitor.wake_if_sleeping()   # what a touch does
+
+    assert woke is True                 # the waking tap is swallowed, not passed through
+    assert not monitor.is_backlight_off
+    assert monitor.departures['Altmarkt'], 'waking should have refetched the departures'
+
+
+def test_touching_an_awake_screen_does_not_refresh(qapp, tmp_path):
+    """An ordinary tap must pass through to the widget under it, not trigger a fetch."""
+    client = FakeClient()
+    monitor = sleeping_monitor(qapp, tmp_path, client)
+    monitor.client = client
+    monitor.refresh()
+
+    calls_before = len(client.monitor_calls)
+    woke = monitor.wake_if_sleeping()
+
+    assert woke is False
+    assert len(client.monitor_calls) == calls_before
+
+
+def test_wake_is_a_no_op_without_backlight_control(qapp, tmp_path):
+    client = FakeClient()
+    monitor = sleeping_monitor(qapp, tmp_path, client)
+    monitor.client = client
+    monitor.use_backlight_control = False
+    monitor.is_backlight_off = True     # cannot really happen, but must stay harmless
+
+    assert monitor.wake_if_sleeping() is False

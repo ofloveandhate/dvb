@@ -59,6 +59,11 @@ DEFAULT_CONFIG = {
     "button_spacing": 6,
     "button_margin":  8,
 
+    # the refresh button holds one small glyph, so it gets a fixed width and the prev/next
+    # buttons -- which carry stop names -- take whatever is left.  without this the refresh
+    # button stretches across the whole window whenever there are no stops to page between.
+    "refresh_button_width": 64,
+
     "is_full_screen": False,
     "is_touch": False,
     "touch_rotation": 270,
@@ -924,6 +929,7 @@ class DVB_Monitor(QMainWindow):
         self.column_group_spacing = self.scaled_px(config["column_group_spacing"])
         self.button_spacing       = self.scaled_px(config["button_spacing"])
         self.button_margin        = self.scaled_px(config["button_margin"])
+        self.refresh_button_width = self.scaled_px(config["refresh_button_width"])
 
         self.mock_update = config["mock_update"]
         self.title = config["window_title"]
@@ -1327,13 +1333,24 @@ class DVB_Monitor(QMainWindow):
         self.buttons['refresh'] = QPushButton("🥀")
         self.buttons['refresh'].clicked.connect(self.manual_refresh)
 
-        if self.is_nav_needed_prev:
-            self.bottom_layout.addWidget(self.buttons['prev'])
+        # never narrower than the glyph needs, whatever the config or the stylesheet say
+        self.buttons['refresh'].setFixedWidth(
+            max(self.refresh_button_width, self.buttons['refresh'].sizeHint().width()))
 
-        self.bottom_layout.addWidget(self.buttons['refresh'])
+        # stretch of 1 on the nav buttons, 0 on refresh: the stop names get the room, the glyph
+        # does not.  where a nav button is absent, an empty stretch takes its place so that the
+        # refresh button stays centred instead of spreading out to fill the window.
+        if self.is_nav_needed_prev:
+            self.bottom_layout.addWidget(self.buttons['prev'], 1)
+        else:
+            self.bottom_layout.addStretch(1)
+
+        self.bottom_layout.addWidget(self.buttons['refresh'], 0)
 
         if self.is_nav_needed_next:
-            self.bottom_layout.addWidget(self.buttons['next'])
+            self.bottom_layout.addWidget(self.buttons['next'], 1)
+        else:
+            self.bottom_layout.addStretch(1)
 
         self.main_layout.addLayout(self.bottom_layout)
 
@@ -1818,6 +1835,15 @@ class DVB_Monitor(QMainWindow):
         """
         if self.use_backlight_control and self.is_backlight_off:
             self.backlight_on()
+
+            # the screen only sleeps after clear_stale_data has thrown the departures away, so
+            # waking it up onto an empty table and waiting to be asked again is no use to
+            # anybody.  a tap to wake means "show me the departures".
+            #
+            # with fetch_in_background this returns before the network is touched, so the touch
+            # handler is not held up.  synchronously it will block for the length of the fetch.
+            self.manual_refresh()
+
             return True   # was sleeping, block the touch
         return False      # was on, process normally
 
