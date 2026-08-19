@@ -131,6 +131,22 @@ its proportions and its physical size.
 Set `scale_with_screen_dpi: false` when the numbers *are* the hardware and must be taken
 literally -- `config_pitft.yaml` does this, because the PiTFT is exactly 480x320 physical pixels.
 
+### Room around the buttons
+
+| setting | default | meaning |
+| --- | --- | --- |
+| `button_margin` | 8 | pixels of room around the row of buttons along the bottom |
+| `button_spacing` | 6 | pixels between one button and the next |
+
+These are config settings rather than stylesheet rules so that they scale with the screen like
+every other pixel size. In CSS they would be stuck at one size on a high-DPI display while
+everything around them grew.
+
+Height at the bottom is the scarcest thing on a small screen. `config_pitft.yaml` uses a 6px
+margin and a 12pt departure font, which is what fits six rows, a heading, the timestamp and a row
+of touch-sized buttons into 320px. If the contents outgrow the window and it cannot grow -- which
+is the case in full screen -- the app says so on startup.
+
 Only these style classes exist; anything else in a stylesheet is ignored:
 
 | class | what it is |
