@@ -1369,10 +1369,12 @@ from fake_dvb_client import ORIGIN_LAT, ORIGIN_LNG, coords as fake_coords
 def _clear_direction_caches():
     """The arrow caches are module level, so one test must not leak into the next."""
     dm._direction_cache.clear()
-    dm._direction_by_trip.clear()
+    dm._direction_by_stop.clear()
+    dm.use_direction_arrows_for(None)
     yield
     dm._direction_cache.clear()
-    dm._direction_by_trip.clear()
+    dm._direction_by_stop.clear()
+    dm.use_direction_arrows_for(None)
 
 
 def street_departures(specs):
@@ -1604,3 +1606,77 @@ def test_the_arrow_column_draws_through_the_getter_registry(qapp, tmp_path):
 
     table = monitor.tables[0]
     assert table.labels[(0, 1)].text() == '→'
+
+
+def test_one_trip_at_two_stops_keeps_an_arrow_for_each():
+    """
+    A tram runs through several of the stops you might be watching under one trip id, and leaves
+    each of them in a different direction. Keyed on the trip alone, whichever stop was fetched
+    last overwrote the others and the arrows flickered as each refresh landed.
+    """
+    departure = FakeDeparture(line='9', direction='Kaditz', mode='Tram',
+                              real_time=datetime.now(timezone.utc), id='SAME-TRIP')
+    client = FakeClient(next_stop_offsets={'SAME-TRIP': (0.0, 0.01)})   # east
+
+    east, _ = dm.resolve_direction_arrows(client, 'STOP-A', ORIGIN, [departure], 5, 3600)
+    client.next_stop_offsets['SAME-TRIP'] = (0.01, 0.0)                 # north
+    north, _ = dm.resolve_direction_arrows(client, 'STOP-B', ORIGIN, [departure], 5, 3600)
+
+    assert east['SAME-TRIP'] == '→'
+    assert north['SAME-TRIP'] == '↑'
+
+    # what the monitor stores, and what the getter sees while drawing each stop
+    dm._direction_by_stop['Altmarkt'] = east
+    dm._direction_by_stop['Postplatz'] = north
+
+    dm.use_direction_arrows_for('Altmarkt')
+    assert dm.get_direction_arrow(departure) == '→'
+
+    dm.use_direction_arrows_for('Postplatz')
+    assert dm.get_direction_arrow(departure) == '↑'
+
+
+def test_each_stop_draws_its_own_arrows(qapp, tmp_path):
+    """The same check through the real drawing path, with two stops on one page."""
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(
+        stops_to_monitor=['Altmarkt', 'Postplatz'], num_stops_per_page=2, window_width=900,
+        num_rows_per_table=4, num_departures_to_monitor=4,
+        columns=[{'header': '', 'width': 60, 'getter': 'get_direction_arrow',
+                  'alignment': 'center'}])
+
+    monitor = build_from_settings(qapp, tmp_path, 'two_stops', settings)
+
+    shared = FakeDeparture(line='9', direction='Kaditz', mode='Tram',
+                           real_time=datetime.now(timezone.utc), id='SAME-TRIP')
+    monitor.client = FakeClient(default=[shared],
+                                next_stop_offsets={'SAME-TRIP': (0.0, 0.01)})
+    monitor.refresh()
+
+    # both tables show the same trip; both must show the arrow worked out for their own stop
+    assert monitor.tables[0].labels[(0, 0)].text() == '→'
+    assert monitor.tables[1].labels[(0, 0)].text() == '→'
+
+    # now let one stop's route differ, as a turning route really would
+    dm._direction_by_stop['Postplatz'] = {'SAME-TRIP': '↑'}
+    monitor.rebuild()
+
+    assert monitor.tables[0].labels[(0, 0)].text() == '→'
+    assert monitor.tables[1].labels[(0, 0)].text() == '↑'
+
+
+def test_arrows_for_a_stop_are_replaced_not_accumulated(qapp, tmp_path):
+    """Otherwise the table grows for as long as the app runs, trip ids never being reused."""
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(stops_to_monitor=['Altmarkt'], num_stops_per_page=1,
+                    columns=[{'header': '', 'width': 60, 'getter': 'get_direction_arrow',
+                              'alignment': 'center'}])
+    monitor = build_from_settings(qapp, tmp_path, 'replaced', settings)
+
+    now = datetime.now(timezone.utc)
+    monitor.client = FakeClient(default=[FakeDeparture(mode='Tram', real_time=now, id='trip-a')])
+    monitor.refresh()
+    monitor.client = FakeClient(default=[FakeDeparture(mode='Tram', real_time=now, id='trip-b')])
+    monitor.refresh()
+
+    assert set(dm._direction_by_stop['Altmarkt']) == {'trip-b'}

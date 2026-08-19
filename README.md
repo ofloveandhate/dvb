@@ -100,6 +100,37 @@ minutes, which sorts them to the bottom of the table and shows as `inf`.
 Set it to `false` to leave them out. They sort last either way, so hiding them never displaces a
 departure that does have a time -- it just frees up the rows at the bottom they were occupying.
 
+## Example configurations
+
+Two config/stylesheet pairs to copy and cut about, both using every column the app has --
+line number, mode emoji, direction arrow, destination and minutes -- and both with more stops
+than fit on a page, so the prev/next buttons are in play.
+
+```
+python DVB_Monitor.py --config config_showcase.yaml
+python DVB_Monitor.py --config config_tutorial.yaml
+```
+
+Add `--fake-client ok` to either to try it without touching the network.
+
+| pair | for |
+| --- | --- |
+| `config_showcase.yaml` + `style_showcase.css` | a wide departure-board look, four stops two at a time. Start here if you want something good-looking to adapt. |
+| `config_tutorial.yaml` + `style_tutorial.css` | the same features with the reasoning left in: seven numbered experiments in the config, four more in the stylesheet, each one a single edit. Start here if you want to understand why. |
+
+The tutorial pair ships with its emoji and arrow columns commented out, so uncommenting them is
+one of the experiments. Every experiment in both files has been run -- changing `num_stops_per_page`
+really does make the nav buttons disappear, 18pt really does grow the rows and then warn you that
+they no longer fit.
+
+One limitation worth knowing before you spend long on a stylesheet: **every departure cell shares
+a single style class**, so you cannot make the minutes bold and the destination plain. Per column,
+the stylesheet cannot tell them apart. Width, alignment and eliding are per column, in the yaml.
+
+The showcase raises `direction_lookups_per_refresh` well above the default, so its arrows fill in
+on the second refresh rather than trickling in over ten of them. That is right for a board you are
+looking at and wrong for one you leave running -- the default is deliberately gentler.
+
 ## Direction arrows
 
 An optional column showing which way each service leaves the stop, as a little arrow:

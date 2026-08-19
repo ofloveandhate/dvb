@@ -1,0 +1,150 @@
+/*
+ * =====================================================================
+ * DVB Monitor - a stylesheet with the reasoning left in
+ * =====================================================================
+ *
+ * This is Qt's stylesheet language (QSS).  It reads like CSS, and mostly
+ * behaves like it, with two differences worth knowing up front:
+ *
+ *   - there are no variables, so every colour is written out in full.
+ *     to reskin the board, search and replace the hex codes.
+ *   - only the widgets this app actually creates can be styled, and
+ *     there are six of them.  they are all below, each one labelled.
+ *
+ * Sizes in pt scale with the screen's resolution.  Sizes in px do not.
+ * Everything here is in pt so the board looks the same size on a laptop
+ * as it does on a small panel.
+ *
+ * TRY: the four experiments below, one at a time.
+ * =====================================================================
+ */
+
+
+/* ---------------------------------------------------------------------
+ * A. THE DEPARTURE ROWS
+ *
+ * Every cell of every departure: the line number, the destination, the
+ * minutes.  They all share this one class, so they all look alike.
+ *
+ * That is the main limitation of styling this app: you cannot make the
+ * minutes bold and the destination plain, because the stylesheet cannot
+ * tell them apart.  Width and alignment are per column, in the yaml.
+ *
+ * TRY: font-size: 18pt.  The rows grow to fit it -- row_height in the
+ *      config is a minimum, not a cap.  At that size the app also starts
+ *      warning you on startup about what no longer fits: the table in the
+ *      window, and "Destination" in its column.  Widen them in the yaml,
+ *      or come back down to about 15pt.
+ * --------------------------------------------------------------------- */
+QLabel[class="grid_cell"] {
+    font-size: 13pt;
+    color: #dfe6ee;
+    background-color: #12151a;
+    border-bottom: 1px solid #232a34;
+    padding-left: 5px;
+    padding-right: 5px;
+}
+
+
+/* ---------------------------------------------------------------------
+ * B. THE COLUMN HEADINGS
+ *
+ * The "Line" / "Destination" / "min" strip above the departures.  Set a
+ * column's header to "" in the yaml and its heading is simply blank --
+ * the strip is still there.
+ *
+ * TRY: background-color: #2a3f5f, for a heavier heading strip.
+ * --------------------------------------------------------------------- */
+QLabel[class="grid_header"] {
+    font-size: 9pt;
+    font-weight: bold;
+    color: #8a94a6;
+    background-color: #171c24;
+    border-bottom: 2px solid #4a90d9;
+    padding-left: 5px;
+    padding-right: 5px;
+}
+
+
+/* ---------------------------------------------------------------------
+ * C. THE STOP NAME
+ *
+ * Sits above each block of departures.  With more than one stop on a
+ * page, there is one of these per stop.
+ *
+ * TRY: color: #4a90d9, to match the line under the headings.
+ * --------------------------------------------------------------------- */
+QLabel[class="haltestelle_header"] {
+    font-size: 16pt;
+    font-weight: bold;
+    color: #6fc3ff;
+    padding-bottom: 3px;
+}
+
+
+/* ---------------------------------------------------------------------
+ * D. THE SAME NAME, WHEN SOMETHING IS WRONG
+ *
+ * The app keeps showing the last departures it managed to fetch when the
+ * API fails, rather than emptying the screen, and marks the stop name so
+ * you can tell.  "stale" means old departures are still on screen;
+ * "error" means the fetch failed and there was nothing to fall back on.
+ *
+ * TRY: see them without breaking anything --
+ *          python DVB_Monitor.py --config myconfig.yaml --fake-client mixed
+ *          python DVB_Monitor.py --config myconfig.yaml --fake-client fail
+ * --------------------------------------------------------------------- */
+QLabel[class="haltestelle_header_stale"] {
+    font-size: 16pt;
+    font-weight: bold;
+    color: #d8a03a;
+    padding-bottom: 3px;
+}
+
+QLabel[class="haltestelle_header_error"] {
+    font-size: 16pt;
+    font-weight: bold;
+    color: #e06c75;
+    padding-bottom: 3px;
+}
+
+
+/* ---------------------------------------------------------------------
+ * E. THE TIMESTAMP
+ *
+ * The line along the bottom.  It also reports trouble: how many stops
+ * failed, when the data was last good, when the next retry is.
+ * --------------------------------------------------------------------- */
+QLabel[class="footer"] {
+    font-size: 8pt;
+    color: #8a94a6;
+}
+
+
+/* ---------------------------------------------------------------------
+ * F. THE BUTTONS AND THE BACKGROUND
+ *
+ * The refresh button in the middle, and the prev/next buttons either
+ * side of it when you have more stops than fit on a page.  Their width
+ * is not set here: the nav buttons take whatever room is left, and the
+ * refresh button keeps to refresh_button_width from the yaml.
+ *
+ * TRY: border-radius: 16px, for something rounder.
+ * --------------------------------------------------------------------- */
+QMainWindow, QWidget {
+    background-color: #12151a;
+}
+
+QPushButton {
+    font-size: 11pt;
+    color: #dfe6ee;
+    background-color: #171c24;
+    border: 1px solid #232a34;
+    border-radius: 4px;
+    padding: 6px;
+}
+
+QPushButton:pressed {
+    background-color: #232a34;
+    border: 1px solid #6fc3ff;
+}

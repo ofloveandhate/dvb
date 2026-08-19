@@ -19,6 +19,7 @@ import os
 import copy
 import math
 import time
+import signal
 import traceback
 
 DEFAULT_CONFIG = {
@@ -150,10 +151,21 @@ DIRECTION_ARROWS = ['↑', '↗', '→', '↘', '↓', '↙', '←', '↖']
 # one entry serves every upcoming departure of that route, which is what keeps the api calls down.
 _direction_cache = {}
 
-# the arrow for each departure currently on screen, by trip id.  rebuilt every refresh, so it
-# cannot grow without bound.  the getters are plain functions with no idea which stop they are
-# drawing, so they look themselves up in here.
-_direction_by_trip = {}
+# the arrows for each stop, as {stop name: {trip id: arrow}}.  it has to be per stop: one tram
+# runs through several of the stops you might be watching, under the same trip id, and leaves
+# each of them in a different direction.  keyed on the trip alone, whichever stop was fetched
+# last used to overwrite the others, and the arrows flickered as each refresh landed.
+_direction_by_stop = {}
+
+# the set belonging to the stop being drawn right now.  the getters are plain functions with no
+# idea which stop they are drawing, so rebuild_table points this at the right one first.
+_active_direction_arrows = {}
+
+
+def use_direction_arrows_for(stop_name):
+    """aim the direction getter at one stop's arrows, before drawing that stop's rows."""
+    global _active_direction_arrows
+    _active_direction_arrows = _direction_by_stop.get(stop_name, {})
 
 
 def bearing_degrees(from_coords, to_coords):
@@ -333,7 +345,7 @@ def get_direction_arrow(departure):
     blank until we have worked it out, and blank for anything we do not draw arrows for.  see
     resolve_direction_arrows for where the arrows come from.
     """
-    return _direction_by_trip.get(getattr(departure, 'id', None), '')
+    return _active_direction_arrows.get(getattr(departure, 'id', None), '')
 
 
 def get_minutes(departure):
@@ -1722,9 +1734,8 @@ class DVB_Monitor(QMainWindow):
             if result.stop_coords is not None:
                 self.stop_coords_cache[result.stop_name] = result.stop_coords
 
-            # the getters have no idea which stop they are drawing, so they read the arrows out
-            # of a module level table keyed by trip id
-            _direction_by_trip.update(result.arrows)
+            # replaced rather than merged, so it cannot grow as trips come and go
+            _direction_by_stop[result.stop_name] = result.arrows
 
             if self.verbosity>=1:
                 print(f'✅ {result.stop_name}: {len(result.departures)} departures '
@@ -1939,6 +1950,9 @@ class DVB_Monitor(QMainWindow):
         stop_name = self.stops_to_monitor[stop_ind]
         self._rebuild_header(table_ind, stop_name)
 
+        # point the direction getter at this stop before drawing any of its rows
+        use_direction_arrows_for(stop_name)
+
         # .get, because a stop that has never fetched successfully simply isn't in here
         departures = self.departures.get(stop_name) or []
 
@@ -2050,6 +2064,31 @@ class DVB_Monitor(QMainWindow):
         return False      # was on, process normally
 
 
+def install_sigint_handler(app):
+    """
+    make ctrl-c in the terminal close the window.
+
+    qt runs its event loop down in c++, and python only gets a look in when control comes back
+    up, so a plain signal handler sits there never being called and ctrl-c does nothing.  a
+    timer that does nothing at all hands control back often enough for python to notice.
+
+    returns the timer, which the caller has to hold on to: drop it and it is garbage collected,
+    and ctrl-c stops working again.
+    """
+    def handle_sigint(signum, frame):
+        print()          # get past the ^C the terminal has just echoed
+        print('closing.')
+        app.quit()       # goes through aboutToQuit, so the background fetch is stopped properly
+
+    signal.signal(signal.SIGINT, handle_sigint)
+
+    timer = QTimer()
+    timer.timeout.connect(lambda: None)
+    timer.start(200)     # milliseconds
+
+    return timer
+
+
 def generate_default_config(path):
     import yaml
 
@@ -2118,6 +2157,9 @@ if __name__ == '__main__':
 
 
     app = QApplication(sys.argv)
+
+    # held in a local so it is not garbage collected while the app runs
+    sigint_timer = install_sigint_handler(app)
 
     try:
         if args.fake_client:
