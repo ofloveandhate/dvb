@@ -362,13 +362,22 @@ def test_all_pages_are_reachable(qapp, tmp_path):
 # config loading
 # --------------------------------------------------------------------------------------
 
-def test_empty_config_file_exits_cleanly(qapp, tmp_path):
-    """An empty yaml parses to None; `"x" not in None` used to raise a bare TypeError."""
+def test_empty_config_file_falls_back_to_defaults(qapp, tmp_path):
+    """
+    An empty yaml parses to None; `"x" not in None` used to raise a bare TypeError.
+
+    It also used to be rejected outright for lacking dvb_client_name. Now that the client name
+    lives outside the config, an empty config is simply every default.
+    """
+    (tmp_path / dm.CLIENT_NAME_FILENAME).write_text('Me <me@example.com>', encoding='utf-8')
+
     path = tmp_path / 'empty.yaml'
     path.write_text('', encoding='utf-8')
 
-    with pytest.raises((SystemExit, RuntimeError)):
-        build_monitor(qapp, str(path), FakeClient())
+    monitor = build_monitor(qapp, str(path), FakeClient())
+
+    assert monitor.stops_to_monitor == dm.DEFAULT_CONFIG['stops_to_monitor']
+    assert monitor.dvb_client_name == 'Me <me@example.com>'
 
 
 def test_config_that_is_a_list_exits_cleanly(qapp, tmp_path):
@@ -728,3 +737,141 @@ def test_stylesheets_shipped_with_the_app_only_style_classes_that_exist(qapp):
         css = open(os.path.join(root, name), encoding='utf-8').read()
         defined = set(re.findall(r'class="([^"]+)"', css))
         assert defined <= applied, f'{name} styles classes no widget ever gets: {defined - applied}'
+
+
+# --------------------------------------------------------------------------------------
+# where the DVB client name comes from
+# --------------------------------------------------------------------------------------
+
+def test_client_name_file_reads_the_first_meaningful_line(tmp_path):
+    path = tmp_path / dm.CLIENT_NAME_FILENAME
+    path.write_text('# put your details below\n\n  Me <me@example.com>  \nignored second line\n',
+                    encoding='utf-8')
+
+    assert dm.read_client_name_file(str(path)) == 'Me <me@example.com>'
+
+
+def test_client_name_file_that_is_missing_or_empty(tmp_path):
+    assert dm.read_client_name_file(str(tmp_path / 'nope.txt')) is None
+
+    blank = tmp_path / 'blank.txt'
+    blank.write_text('\n\n# only a comment\n', encoding='utf-8')
+    assert dm.read_client_name_file(str(blank)) is None
+
+
+def test_search_path_prefers_the_config_directory(tmp_path):
+    search = dm.client_name_search_path(str(tmp_path / 'config.yaml'))
+
+    assert search[0] == str(tmp_path / dm.CLIENT_NAME_FILENAME)
+    # and the checkout itself is the fallback, which is the usual case
+    assert search[-1].endswith(dm.CLIENT_NAME_FILENAME)
+    assert len(search) == len(set(search))   # no duplicate when both dirs coincide
+
+
+def test_the_file_beats_a_config_entry(tmp_path):
+    path = tmp_path / dm.CLIENT_NAME_FILENAME
+    path.write_text('From The File <file@example.com>', encoding='utf-8')
+
+    found = dm.find_client_name([str(path)], config_value='From The Config <cfg@example.com>')
+
+    assert found == 'From The File <file@example.com>'
+
+
+def test_a_config_entry_still_works_when_there_is_no_file(tmp_path):
+    """Back-compat: setups that predate the separate file must keep working."""
+    found = dm.find_client_name([str(tmp_path / dm.CLIENT_NAME_FILENAME)],
+                                config_value='From The Config <cfg@example.com>')
+
+    assert found == 'From The Config <cfg@example.com>'
+
+
+def test_nothing_anywhere_returns_none(tmp_path):
+    assert dm.find_client_name([str(tmp_path / dm.CLIENT_NAME_FILENAME)], config_value=None) is None
+    assert dm.find_client_name([str(tmp_path / dm.CLIENT_NAME_FILENAME)], config_value='') is None
+
+
+def test_the_missing_message_names_a_real_path_and_the_fallback(tmp_path):
+    search = dm.client_name_search_path(str(tmp_path / 'config.yaml'))
+    message = dm.missing_client_name_message(search)
+
+    assert dm.CLIENT_NAME_FILENAME in message
+    assert 'gitignored' in message
+    assert 'dvb_client_name:' in message   # tells you the config entry still works
+
+
+def test_config_without_a_client_name_entry_starts(qapp, tmp_path):
+    """
+    The whole point: a config file you can commit. This used to raise
+    'required entry `dvb_client_name` not found'.
+    """
+    import yaml
+    (tmp_path / dm.CLIENT_NAME_FILENAME).write_text('Me <me@example.com>', encoding='utf-8')
+
+    config = {
+        'stops_to_monitor': ['Altmarkt'],
+        'num_stops_per_page': 1,
+        'num_rows_per_table': 6,
+        'window_width': 1300,
+        'window_height': 900,
+        'css_file': os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                 'style.css'),
+        'fetch_in_background': False,
+        'verbosity': 0,
+    }
+    path = tmp_path / 'no_client_name.yaml'
+    path.write_text(yaml.safe_dump(config), encoding='utf-8')
+
+    monitor = build_monitor(qapp, str(path), FakeClient())
+
+    assert monitor.dvb_client_name == 'Me <me@example.com>'
+
+
+def test_the_file_beside_the_config_wins_end_to_end(qapp, tmp_path):
+    import yaml
+    (tmp_path / dm.CLIENT_NAME_FILENAME).write_text('File Wins <file@example.com>', encoding='utf-8')
+
+    config = {
+        'dvb_client_name': 'Config Loses <cfg@example.com>',
+        'stops_to_monitor': ['Altmarkt'],
+        'num_stops_per_page': 1,
+        'num_rows_per_table': 6,
+        'window_width': 1300,
+        'window_height': 900,
+        'css_file': os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                 'style.css'),
+        'fetch_in_background': False,
+        'verbosity': 0,
+    }
+    path = tmp_path / 'both.yaml'
+    path.write_text(yaml.safe_dump(config), encoding='utf-8')
+
+    monitor = build_monitor(qapp, str(path), FakeClient())
+
+    assert monitor.dvb_client_name == 'File Wins <file@example.com>'
+
+
+def test_shipped_configs_carry_no_contact_details():
+    """
+    Every committed config must be safe to commit and to share. This is the regression that
+    started all of it -- one of them used to ship a blank dvb_client_name placeholder.
+    """
+    import glob, yaml
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    shipped = glob.glob(os.path.join(root, 'config*.yaml'))
+
+    assert shipped, 'expected some committed config files'
+
+    for path in shipped:
+        loaded = yaml.safe_load(open(path, encoding='utf-8')) or {}
+        assert 'dvb_client_name' not in loaded, (
+            f'{os.path.basename(path)} carries a dvb_client_name; it belongs in '
+            f'{dm.CLIENT_NAME_FILENAME}, which is gitignored')
+
+
+def test_the_client_name_file_is_gitignored():
+    """A file we tell people to create must actually be ignored, or this all backfires."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ignored = open(os.path.join(root, '.gitignore'), encoding='utf-8').read()
+
+    assert dm.CLIENT_NAME_FILENAME in ignored
