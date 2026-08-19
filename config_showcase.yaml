@@ -1,0 +1,110 @@
+# =====================================================================
+# DVB Monitor - showcase configuration
+# =====================================================================
+#
+# A wide, good-looking board that uses every column type the app has:
+# line number, mode emoji, direction arrow, destination and minutes.
+#
+# Four stops shown two at a time, so the prev/next buttons appear and
+# you can page between them with the arrow keys or a touch.
+#
+# Run it with:
+#     python DVB_Monitor.py --config config_showcase.yaml
+#
+# Or without touching the network at all:
+#     python DVB_Monitor.py --config config_showcase.yaml --fake-client ok
+#
+# Pair this with style_showcase.css.  See config_tutorial.yaml for the
+# same ideas with every setting explained.
+# =====================================================================
+
+stops_to_monitor:
+  - Altmarkt
+  - Pirnaischerplatz
+  - Postplatz
+  - Pragerstr
+
+# two stops side by side, four in total, so there are two pages to flip between
+num_stops_per_page: 2
+
+# one block of six per stop.  raise num_departures_to_monitor above this and the
+# app starts a second block beside the first, which is how the pi tft config
+# fits twelve departures onto a small screen.
+num_rows_per_table: 6
+num_departures_to_monitor: 6
+
+row_height: 34
+column_group_spacing: 24
+
+# the contents come to 798 x 363, so this is a little room to spare rather
+# than a lot of empty board.  the app tells you on startup if it does not fit.
+window_width: 830
+window_height: 375
+window_loc_x: 0
+window_loc_y: 0
+
+window_title: "DVB Departures"
+css_file: "style_showcase.css"
+
+refresh_interval: 60          # seconds
+clear_interval: 300           # seconds
+consecutive_autorefresh_timeout_threshold: 30
+refresh_forever: false
+
+# untimed departures show as "inf", which is honest but not pretty on a board
+# meant to be looked at.  leave them out here.
+show_infinite_arrivals: false
+
+# arrows are worked out once per route and then reused; see the readme.
+#
+# the default of 4 lookups per refresh is deliberately gentle on the api, but it
+# means a cold start takes several refreshes to fill in, and on a board you are
+# looking at rather than leaving running that is just waiting.  these four stops
+# have about 38 routes between them, so 20 fills the board on the second refresh.
+# it is a one-off: once they are cached, refreshes cost nothing extra.
+direction_recompute_interval: 3600
+direction_lookups_per_refresh: 20
+
+button_margin: 10
+button_spacing: 8
+refresh_button_width: 70
+
+verbosity: 1
+
+# ---------------------------------------------------------------------
+# The columns, left to right.  Every getter the app has is used here.
+# Widths are in pixels and must add up to something that fits the window:
+# 56 + 42 + 34 + 208 + 56 = 396 per stop, two stops = 792 of 830.
+# ---------------------------------------------------------------------
+columns:
+  # the line number
+  - header: "Line"
+    width: 56
+    getter: get_line
+    alignment: center
+
+  # tram, bus, ferry... one glyph for the mode of transport
+  - header: ""
+    width: 42
+    getter: get_mode_emoji
+    alignment: center
+
+  # which way it leaves this stop
+  - header: ""
+    width: 34
+    getter: get_direction_arrow
+    alignment: center
+
+  # where it is going.  elide: true shortens anything too long with an ellipsis
+  # instead of letting it run into the next column
+  - header: "Destination"
+    width: 208
+    getter: get_destination
+    alignment: left
+    elide: true
+
+  # minutes until it leaves
+  - header: "min"
+    width: 56
+    getter: get_minutes
+    alignment: right
