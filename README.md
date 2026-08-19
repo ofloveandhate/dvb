@@ -88,6 +88,18 @@ Relevant `config.yaml` settings, all optional:
 | `error_placeholder` | `—` | drawn in a cell whose value could not be computed |
 | `unknown_mode_emoji` | `` | drawn for a mode of transit with no emoji |
 
+## Arrivals with no time
+
+The API does not always give a real time for a departure. Those get an infinite number of
+minutes, which sorts them to the bottom of the table and shows as `inf`.
+
+| setting | default | meaning |
+| --- | --- | --- |
+| `show_infinite_arrivals` | true | show departures the API gave no time for |
+
+Set it to `false` to leave them out. They sort last either way, so hiding them never displaces a
+departure that does have a time -- it just frees up the rows at the bottom they were occupying.
+
 ## Changing how it looks
 
 `style.css` is the default; `style_pitft.css` is tuned for the 480x320 Adafruit PiTFT. Point at

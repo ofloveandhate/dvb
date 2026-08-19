@@ -1259,3 +1259,100 @@ def test_wake_is_a_no_op_without_backlight_control(qapp, tmp_path):
     monitor.is_backlight_off = True     # cannot really happen, but must stay harmless
 
     assert monitor.wake_if_sleeping() is False
+
+
+# --------------------------------------------------------------------------------------
+# show_infinite_arrivals
+# --------------------------------------------------------------------------------------
+
+from fake_dvb_client import FakeDeparture
+
+
+def mixed_departures(real=3, unknown=2):
+    """Some departures the API timed, and some it did not."""
+    timed = sample_departures(real)
+    untimed = [FakeDeparture(line=str(90 + i), direction=f'Unknown {i}', real_time=None)
+               for i in range(unknown)]
+    return timed + untimed
+
+
+def minutes_column(monitor, table_index=0):
+    """The text of every non-empty cell in the minutes column."""
+    col = next(i for i, c in enumerate(monitor.columns) if c.getter is dm.get_minutes)
+    table = monitor.tables[table_index]
+    values = [table.labels[(row, col)].text() for row in range(monitor.num_rows_per_table)]
+    return [v for v in values if v]
+
+
+def build_with_departures(qapp, tmp_path, name, departures, **overrides):
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(stops_to_monitor=['Altmarkt'], num_stops_per_page=1)
+    settings.update(overrides)
+
+    monitor = build_from_settings(qapp, tmp_path, name, settings)
+    monitor.client = FakeClient(default=list(departures))
+    monitor.refresh()
+    return monitor
+
+
+def test_show_infinite_arrivals_defaults_to_true():
+    assert dm.DEFAULT_CONFIG['show_infinite_arrivals'] is True
+
+
+def test_infinite_arrivals_are_shown_by_default(qapp, tmp_path):
+    monitor = build_with_departures(qapp, tmp_path, 'inf_shown', mixed_departures())
+
+    assert monitor.show_infinite_arrivals is True
+    assert 'inf' in minutes_column(monitor)
+
+
+def test_infinite_arrivals_can_be_hidden(qapp, tmp_path):
+    monitor = build_with_departures(qapp, tmp_path, 'inf_hidden', mixed_departures(),
+                                    show_infinite_arrivals=False)
+
+    shown = minutes_column(monitor)
+
+    assert 'inf' not in shown
+    assert shown == ['2', '5', '8']   # the timed ones, still in order
+
+
+def test_hiding_them_leaves_the_timed_departures_alone(qapp, tmp_path):
+    """Filtering must not drop or reorder anything the API actually gave a time for."""
+    with_them = build_with_departures(qapp, tmp_path, 'with', mixed_departures(4, 3))
+    without   = build_with_departures(qapp, tmp_path, 'without', mixed_departures(4, 3),
+                                      show_infinite_arrivals=False)
+
+    timed = [v for v in minutes_column(with_them) if v != 'inf']
+
+    assert minutes_column(without) == timed
+
+
+def test_hiding_them_when_every_arrival_is_untimed(qapp, tmp_path):
+    """An empty table, not a crash."""
+    monitor = build_with_departures(qapp, tmp_path, 'all_inf', mixed_departures(0, 4),
+                                    show_infinite_arrivals=False)
+
+    assert minutes_column(monitor) == []
+
+
+def test_showing_them_when_every_arrival_is_untimed(qapp, tmp_path):
+    monitor = build_with_departures(qapp, tmp_path, 'all_inf_shown', mixed_departures(0, 4))
+
+    assert minutes_column(monitor) == ['inf'] * 4
+
+
+def test_hidden_infinite_arrivals_free_up_the_rows_they_occupied(qapp, tmp_path):
+    """
+    Untimed arrivals sort to the bottom, so they never push a timed one off the end -- but with
+    more rows than timed departures they do take up the rows that are left.
+    """
+    departures = mixed_departures(real=4, unknown=4)
+    common = dict(num_rows_per_table=6, num_departures_to_monitor=6)
+
+    shown  = minutes_column(build_with_departures(qapp, tmp_path, 'budget_shown', departures,
+                                                  **common))
+    hidden = minutes_column(build_with_departures(qapp, tmp_path, 'budget_hidden', departures,
+                                                  show_infinite_arrivals=False, **common))
+
+    assert shown == ['2', '5', '8', '11', 'inf', 'inf']   # two rows spent on untimed arrivals
+    assert hidden == ['2', '5', '8', '11']                # those rows now simply empty
