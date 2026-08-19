@@ -24,7 +24,6 @@ verbosity: 1
 window_title: "DVB Local Stop Monitor" 
 num_departures_to_monitor: 12 
 
-dvb_client_name: "" # set your name and email address here!!!
 
 columns:
   - header: "#"
