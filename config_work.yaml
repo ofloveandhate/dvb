@@ -12,7 +12,7 @@ refresh_interval: 60          # seconds
 clear_interval: 60           # seconds
 
 window_width: 1300 # in pixels
-window_height: 400  # PiTFT Plus': [0, 0, 480, 320] #https://www.adafruit.com/product/2441
+window_height: 520  # 12 rows plus the heading, timestamp and buttons  # PiTFT Plus': [0, 0, 480, 320] #https://www.adafruit.com/product/2441
 
 window_loc_x: 0
 window_loc_y: 0

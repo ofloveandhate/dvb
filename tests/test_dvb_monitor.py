@@ -1085,3 +1085,177 @@ def test_pixel_sizes_scale_with_the_screen(qapp, tmp_path, dpi, expected, monkey
     assert monitor.row_height == round(dm.DEFAULT_CONFIG['row_height'] * expected)
     assert monitor.columns[0].width == round(dm.DEFAULT_CONFIG['columns'][0]['width'] * expected)
     assert monitor.column_group_spacing == round(dm.DEFAULT_CONFIG['column_group_spacing'] * expected)
+
+
+# --------------------------------------------------------------------------------------
+# room around the bottom buttons
+# --------------------------------------------------------------------------------------
+
+def test_the_button_row_has_room_around_and_between(qapp, tmp_path):
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(stops_to_monitor=['A', 'B', 'C'], num_stops_per_page=1,
+                    button_margin=8, button_spacing=6)
+
+    monitor = build_from_settings(qapp, tmp_path, 'buttons', settings)
+
+    assert monitor.bottom_layout.spacing() == 6
+    margins = monitor.bottom_layout.contentsMargins()
+    assert (margins.left(), margins.top(), margins.right(), margins.bottom()) == (8, 8, 8, 8)
+
+
+def test_button_room_scales_with_the_screen(qapp, tmp_path, monkeypatch):
+    """
+    Room around the buttons is a config pixel size, not a stylesheet one, so that it grows with
+    everything else on a high-dpi screen instead of staying stuck at one size.
+    """
+    monkeypatch.setattr(dm, 'layout_scale_factor',
+                        lambda screen, reference_dpi=96.0, enabled=True: 2.0 if enabled else 1.0)
+
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(button_margin=8, button_spacing=6, scale_with_screen_dpi=True)
+
+    monitor = build_from_settings(qapp, tmp_path, 'buttons_hidpi', settings, scale_with_dpi=True)
+
+    assert monitor.button_margin == 16
+    assert monitor.button_spacing == 12
+    assert monitor.bottom_layout.spacing() == 12
+
+
+def test_the_defaults_fit_the_whole_window_not_just_the_table(qapp, tmp_path):
+    """
+    The grid fitting is not enough: the stop name, the timestamp and the button row all take
+    height too.  Adding room around the buttons pushed the contents past the bottom edge, and
+    the table-only check said nothing.
+    """
+    monitor = build_from_settings(qapp, tmp_path, 'whole_defaults', dm.DEFAULT_CONFIG,
+                                  scale_with_dpi=True)
+    needed = monitor.centralWidget().sizeHint()
+
+    assert needed.height() <= monitor.height
+    assert needed.width() <= monitor.width
+
+
+@pytest.mark.parametrize('config_path', shipped_config_paths(),
+                         ids=lambda p: os.path.basename(p))
+def test_shipped_configs_fit_the_whole_window(qapp, tmp_path, config_path):
+    import yaml
+
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(yaml.safe_load(open(config_path, encoding='utf-8')) or {})
+
+    name = os.path.splitext(os.path.basename(config_path))[0]
+    monitor = build_from_settings(qapp, tmp_path, name, settings, scale_with_dpi=True)
+    needed = monitor.centralWidget().sizeHint()
+
+    assert needed.height() <= monitor.height, (
+        f'{name}: contents need {needed.height()}px but window_height is {monitor.height}')
+    assert needed.width() <= monitor.width, (
+        f'{name}: contents need {needed.width()}px but window_width is {monitor.width}')
+
+
+# --------------------------------------------------------------------------------------
+# the refresh button, and waking from sleep
+# --------------------------------------------------------------------------------------
+
+def test_refresh_button_does_not_stretch_across_the_window(qapp, tmp_path):
+    """
+    With no stops to page between there are no nav buttons, and the refresh button used to
+    spread across the entire window.
+    """
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(stops_to_monitor=['Altmarkt'], num_stops_per_page=1, window_width=1300)
+
+    monitor = build_from_settings(qapp, tmp_path, 'lonely_refresh', settings)
+    monitor.show()
+    qapp.processEvents()
+
+    assert 'prev' not in monitor.buttons and 'next' not in monitor.buttons
+    assert monitor.buttons['refresh'].width() <= monitor.refresh_button_width
+    assert monitor.buttons['refresh'].width() < monitor.width / 4
+
+
+def test_nav_buttons_get_the_room_the_refresh_button_does_not(qapp, tmp_path):
+    """Prev/next carry stop names and should take the width; the glyph should not."""
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(stops_to_monitor=['Altmarkt', 'Postplatz', 'Pirnaischer Platz'],
+                    num_stops_per_page=1, window_width=1300)
+
+    monitor = build_from_settings(qapp, tmp_path, 'nav_room', settings)
+    monitor.show()
+    qapp.processEvents()
+
+    assert monitor.buttons['prev'].width() > monitor.buttons['refresh'].width()
+    assert monitor.buttons['next'].width() > monitor.buttons['refresh'].width()
+
+
+def test_the_refresh_button_never_clips_its_glyph(qapp, tmp_path):
+    """A silly-small configured width must not cut the icon in half."""
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(stops_to_monitor=['Altmarkt'], refresh_button_width=1)
+
+    monitor = build_from_settings(qapp, tmp_path, 'tiny_refresh', settings)
+
+    assert monitor.buttons['refresh'].width() >= monitor.buttons['refresh'].sizeHint().width()
+
+
+def sleeping_monitor(qapp, tmp_path, client):
+    """A monitor with backlight control, driven into the slept state."""
+    backlight = tmp_path / 'brightness'
+    backlight.write_text('1', encoding='utf-8')
+
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(stops_to_monitor=['Altmarkt'], num_stops_per_page=1,
+                    refresh_forever=False)
+
+    monitor = build_from_settings(qapp, tmp_path, 'sleepy', settings)
+    # switched on after construction, so validate_config does not demand the path up front
+    monitor.use_backlight_control = True
+    monitor.backlight_path = str(backlight)
+    return monitor
+
+
+def test_waking_from_sleep_refreshes_without_a_button_press(qapp, tmp_path):
+    """
+    The screen only sleeps after clear_stale_data has discarded the departures, so waking onto
+    an empty table and waiting to be asked again is no use.
+    """
+    client = FakeClient()
+    monitor = sleeping_monitor(qapp, tmp_path, client)
+    monitor.client = client
+
+    monitor.refresh()
+    assert monitor.departures['Altmarkt']
+
+    monitor.clear_stale_data()          # what the stale timer does
+    assert monitor.departures == {}
+    assert monitor.is_backlight_off
+
+    woke = monitor.wake_if_sleeping()   # what a touch does
+
+    assert woke is True                 # the waking tap is swallowed, not passed through
+    assert not monitor.is_backlight_off
+    assert monitor.departures['Altmarkt'], 'waking should have refetched the departures'
+
+
+def test_touching_an_awake_screen_does_not_refresh(qapp, tmp_path):
+    """An ordinary tap must pass through to the widget under it, not trigger a fetch."""
+    client = FakeClient()
+    monitor = sleeping_monitor(qapp, tmp_path, client)
+    monitor.client = client
+    monitor.refresh()
+
+    calls_before = len(client.monitor_calls)
+    woke = monitor.wake_if_sleeping()
+
+    assert woke is False
+    assert len(client.monitor_calls) == calls_before
+
+
+def test_wake_is_a_no_op_without_backlight_control(qapp, tmp_path):
+    client = FakeClient()
+    monitor = sleeping_monitor(qapp, tmp_path, client)
+    monitor.client = client
+    monitor.use_backlight_control = False
+    monitor.is_backlight_off = True     # cannot really happen, but must stay harmless
+
+    assert monitor.wake_if_sleeping() is False

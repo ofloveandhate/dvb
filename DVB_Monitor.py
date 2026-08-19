@@ -30,7 +30,7 @@ DEFAULT_CONFIG = {
     "refresh_interval": 60,
     "clear_interval": 120,
     "window_width": 480,
-    "window_height": 320,
+    "window_height": 340,   # 329 is the content with 8px button margins; this leaves a little slack
     "window_loc_x": 0,
     "window_loc_y": 0,
     "mock_update": False,
@@ -52,6 +52,17 @@ DEFAULT_CONFIG = {
     ],
 
     "column_group_spacing": 20,
+
+    # room around the row of buttons along the bottom, and between them.  in pixels, and scaled
+    # with the screen like every other pixel size here -- putting it in the stylesheet instead
+    # would leave it stuck at one size on a high-dpi screen while everything around it grew.
+    "button_spacing": 6,
+    "button_margin":  8,
+
+    # the refresh button holds one small glyph, so it gets a fixed width and the prev/next
+    # buttons -- which carry stop names -- take whatever is left.  without this the refresh
+    # button stretches across the whole window whenever there are no stops to page between.
+    "refresh_button_width": 64,
 
     "is_full_screen": False,
     "is_touch": False,
@@ -916,6 +927,9 @@ class DVB_Monitor(QMainWindow):
             ))
 
         self.column_group_spacing = self.scaled_px(config["column_group_spacing"])
+        self.button_spacing       = self.scaled_px(config["button_spacing"])
+        self.button_margin        = self.scaled_px(config["button_margin"])
+        self.refresh_button_width = self.scaled_px(config["refresh_button_width"])
 
         self.mock_update = config["mock_update"]
         self.title = config["window_title"]
@@ -1122,8 +1136,39 @@ class DVB_Monitor(QMainWindow):
             self.show()
         self.app.processEvents()   # paint the empty grid now, rather than after the first fetch
 
+        self._warn_if_window_too_small()
+
         # via the event loop, so it is already running before the worker thread starts
         QTimer.singleShot(0, self.auto_refresh) # kick it off!
+
+    def _warn_if_window_too_small(self):
+        """
+        check the WHOLE window, not just the table.
+
+        _warn_if_layout_overflows only measures the grid, so the timestamp and the row of
+        buttons could push past the bottom edge without anything saying so.  on a normal
+        desktop the window simply grows, which is fine; in full screen it cannot, and the
+        buttons are what falls off.
+        """
+        central = self.centralWidget()
+        if central is None:
+            return
+
+        needed = central.sizeHint()
+
+        if needed.height() <= self.height and needed.width() <= self.width:
+            return
+
+        detail = (f'the contents need {needed.width()}x{needed.height()}px but the window is '
+                  f'{self.width}x{self.height}px')
+
+        if self.is_full_screen:
+            print(f'⚠️  {detail}, and in full screen it cannot grow, so the bottom will be cut '
+                  f'off.  Fixes: reduce font-size in {self.css_file}, lower button_margin '
+                  f'(currently {self.button_margin}), or reduce num_rows_per_table '
+                  f'(currently {self.num_rows_per_table}).')
+        elif self.verbosity >= 1:
+            print(f'ℹ️ {detail}, so the window was grown to fit')
 
 
     def setup_touch(self):
@@ -1271,6 +1316,9 @@ class DVB_Monitor(QMainWindow):
         self.buttons = {}
 
         self.bottom_layout = QHBoxLayout()
+        self.bottom_layout.setSpacing(self.button_spacing)
+        self.bottom_layout.setContentsMargins(self.button_margin, self.button_margin,
+                                              self.button_margin, self.button_margin)
 
         self.setup_timeupdated()
 
@@ -1285,13 +1333,24 @@ class DVB_Monitor(QMainWindow):
         self.buttons['refresh'] = QPushButton("🥀")
         self.buttons['refresh'].clicked.connect(self.manual_refresh)
 
-        if self.is_nav_needed_prev:
-            self.bottom_layout.addWidget(self.buttons['prev'])
+        # never narrower than the glyph needs, whatever the config or the stylesheet say
+        self.buttons['refresh'].setFixedWidth(
+            max(self.refresh_button_width, self.buttons['refresh'].sizeHint().width()))
 
-        self.bottom_layout.addWidget(self.buttons['refresh'])
+        # stretch of 1 on the nav buttons, 0 on refresh: the stop names get the room, the glyph
+        # does not.  where a nav button is absent, an empty stretch takes its place so that the
+        # refresh button stays centred instead of spreading out to fill the window.
+        if self.is_nav_needed_prev:
+            self.bottom_layout.addWidget(self.buttons['prev'], 1)
+        else:
+            self.bottom_layout.addStretch(1)
+
+        self.bottom_layout.addWidget(self.buttons['refresh'], 0)
 
         if self.is_nav_needed_next:
-            self.bottom_layout.addWidget(self.buttons['next'])
+            self.bottom_layout.addWidget(self.buttons['next'], 1)
+        else:
+            self.bottom_layout.addStretch(1)
 
         self.main_layout.addLayout(self.bottom_layout)
 
@@ -1776,6 +1835,15 @@ class DVB_Monitor(QMainWindow):
         """
         if self.use_backlight_control and self.is_backlight_off:
             self.backlight_on()
+
+            # the screen only sleeps after clear_stale_data has thrown the departures away, so
+            # waking it up onto an empty table and waiting to be asked again is no use to
+            # anybody.  a tap to wake means "show me the departures".
+            #
+            # with fetch_in_background this returns before the network is touched, so the touch
+            # handler is not held up.  synchronously it will block for the length of the fetch.
+            self.manual_refresh()
+
             return True   # was sleeping, block the touch
         return False      # was on, process normally
 

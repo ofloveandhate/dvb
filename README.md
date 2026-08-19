@@ -67,6 +67,11 @@ stops the display any more:
   as soon as anything succeeds
 - fetching happens on a background thread, so the window stays responsive even when the API hangs
 
+On a touchscreen with `use_backlight_control`, the display sleeps once its data has gone stale.
+Tapping to wake it also refreshes, so you get current departures rather than an empty table and a
+button to press. That first tap only wakes; it does not fall through to whatever was underneath
+it.
+
 Relevant `config.yaml` settings, all optional:
 
 | setting | default | meaning |
@@ -130,6 +135,29 @@ its proportions and its physical size.
 
 Set `scale_with_screen_dpi: false` when the numbers *are* the hardware and must be taken
 literally -- `config_pitft.yaml` does this, because the PiTFT is exactly 480x320 physical pixels.
+
+### Room around the buttons
+
+| setting | default | meaning |
+| --- | --- | --- |
+| `button_margin` | 8 | pixels of room around the row of buttons along the bottom |
+| `button_spacing` | 6 | pixels between one button and the next |
+| `refresh_button_width` | 64 | width of the refresh button |
+
+The refresh button holds a single glyph, so it keeps a fixed width and the prev/next buttons --
+which carry stop names -- take whatever room is left. With only one stop group to show there are
+no prev/next buttons at all, and the refresh button stays its own size in the middle rather than
+stretching the width of the window. It never shrinks below what the glyph needs, whatever you
+set.
+
+These are config settings rather than stylesheet rules so that they scale with the screen like
+every other pixel size. In CSS they would be stuck at one size on a high-DPI display while
+everything around them grew.
+
+Height at the bottom is the scarcest thing on a small screen. `config_pitft.yaml` uses a 6px
+margin and a 12pt departure font, which is what fits six rows, a heading, the timestamp and a row
+of touch-sized buttons into 320px. If the contents outgrow the window and it cannot grow -- which
+is the case in full screen -- the app says so on startup.
 
 Only these style classes exist; anything else in a stylesheet is ignored:
 

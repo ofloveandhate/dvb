@@ -16,6 +16,10 @@ clear_interval: 120           # seconds
 # not sizes to be scaled to a screen.  pin the scaling off so it stays that way.
 scale_with_screen_dpi: false
 
+# room around the touch buttons.  8 would overflow this screen by a pixel; 6 fits.
+button_margin: 6
+button_spacing: 6
+
 window_width: 480 # in pixels
 window_height: 320  # PiTFT Plus': [0, 0, 480, 320] #https://www.adafruit.com/product/2441
 
