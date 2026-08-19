@@ -1085,3 +1085,69 @@ def test_pixel_sizes_scale_with_the_screen(qapp, tmp_path, dpi, expected, monkey
     assert monitor.row_height == round(dm.DEFAULT_CONFIG['row_height'] * expected)
     assert monitor.columns[0].width == round(dm.DEFAULT_CONFIG['columns'][0]['width'] * expected)
     assert monitor.column_group_spacing == round(dm.DEFAULT_CONFIG['column_group_spacing'] * expected)
+
+
+# --------------------------------------------------------------------------------------
+# room around the bottom buttons
+# --------------------------------------------------------------------------------------
+
+def test_the_button_row_has_room_around_and_between(qapp, tmp_path):
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(stops_to_monitor=['A', 'B', 'C'], num_stops_per_page=1,
+                    button_margin=8, button_spacing=6)
+
+    monitor = build_from_settings(qapp, tmp_path, 'buttons', settings)
+
+    assert monitor.bottom_layout.spacing() == 6
+    margins = monitor.bottom_layout.contentsMargins()
+    assert (margins.left(), margins.top(), margins.right(), margins.bottom()) == (8, 8, 8, 8)
+
+
+def test_button_room_scales_with_the_screen(qapp, tmp_path, monkeypatch):
+    """
+    Room around the buttons is a config pixel size, not a stylesheet one, so that it grows with
+    everything else on a high-dpi screen instead of staying stuck at one size.
+    """
+    monkeypatch.setattr(dm, 'layout_scale_factor',
+                        lambda screen, reference_dpi=96.0, enabled=True: 2.0 if enabled else 1.0)
+
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(button_margin=8, button_spacing=6, scale_with_screen_dpi=True)
+
+    monitor = build_from_settings(qapp, tmp_path, 'buttons_hidpi', settings, scale_with_dpi=True)
+
+    assert monitor.button_margin == 16
+    assert monitor.button_spacing == 12
+    assert monitor.bottom_layout.spacing() == 12
+
+
+def test_the_defaults_fit_the_whole_window_not_just_the_table(qapp, tmp_path):
+    """
+    The grid fitting is not enough: the stop name, the timestamp and the button row all take
+    height too.  Adding room around the buttons pushed the contents past the bottom edge, and
+    the table-only check said nothing.
+    """
+    monitor = build_from_settings(qapp, tmp_path, 'whole_defaults', dm.DEFAULT_CONFIG,
+                                  scale_with_dpi=True)
+    needed = monitor.centralWidget().sizeHint()
+
+    assert needed.height() <= monitor.height
+    assert needed.width() <= monitor.width
+
+
+@pytest.mark.parametrize('config_path', shipped_config_paths(),
+                         ids=lambda p: os.path.basename(p))
+def test_shipped_configs_fit_the_whole_window(qapp, tmp_path, config_path):
+    import yaml
+
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(yaml.safe_load(open(config_path, encoding='utf-8')) or {})
+
+    name = os.path.splitext(os.path.basename(config_path))[0]
+    monitor = build_from_settings(qapp, tmp_path, name, settings, scale_with_dpi=True)
+    needed = monitor.centralWidget().sizeHint()
+
+    assert needed.height() <= monitor.height, (
+        f'{name}: contents need {needed.height()}px but window_height is {monitor.height}')
+    assert needed.width() <= monitor.width, (
+        f'{name}: contents need {needed.width()}px but window_width is {monitor.width}')

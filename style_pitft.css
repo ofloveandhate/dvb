@@ -4,8 +4,9 @@
  * Same rules as style.css, retuned for a small screen you read from arm's length:
  * bigger departure text, and everything around it shrunk to make room for it.
  *
- * There is very little spare height here. 13pt is the largest departure text
- * that still fits 6 rows, a heading, the timestamp and the buttons into 320px.
+ * There is very little spare height here. 12pt is the largest departure text that
+ * still fits 6 rows, a heading, the timestamp and the buttons -- with room around
+ * the buttons, which matters when they are touch targets -- into 320px.
  * Go bigger and the bottom will be cut off - the app prints a warning on
  * startup when the table no longer fits the window.
  *
@@ -20,7 +21,7 @@
 
 /* the departure rows. the whole point of the screen, so it gets the space. */
 QLabel[class="grid_cell"] {
-    font-size: 13pt;
+    font-size: 12pt;
     color: #ffffff;
     background-color: #1a1a1a;
     border: 1px solid #2a2a2a;

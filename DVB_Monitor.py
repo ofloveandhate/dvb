@@ -30,7 +30,7 @@ DEFAULT_CONFIG = {
     "refresh_interval": 60,
     "clear_interval": 120,
     "window_width": 480,
-    "window_height": 320,
+    "window_height": 340,   # 329 is the content with 8px button margins; this leaves a little slack
     "window_loc_x": 0,
     "window_loc_y": 0,
     "mock_update": False,
@@ -52,6 +52,12 @@ DEFAULT_CONFIG = {
     ],
 
     "column_group_spacing": 20,
+
+    # room around the row of buttons along the bottom, and between them.  in pixels, and scaled
+    # with the screen like every other pixel size here -- putting it in the stylesheet instead
+    # would leave it stuck at one size on a high-dpi screen while everything around it grew.
+    "button_spacing": 6,
+    "button_margin":  8,
 
     "is_full_screen": False,
     "is_touch": False,
@@ -916,6 +922,8 @@ class DVB_Monitor(QMainWindow):
             ))
 
         self.column_group_spacing = self.scaled_px(config["column_group_spacing"])
+        self.button_spacing       = self.scaled_px(config["button_spacing"])
+        self.button_margin        = self.scaled_px(config["button_margin"])
 
         self.mock_update = config["mock_update"]
         self.title = config["window_title"]
@@ -1122,8 +1130,39 @@ class DVB_Monitor(QMainWindow):
             self.show()
         self.app.processEvents()   # paint the empty grid now, rather than after the first fetch
 
+        self._warn_if_window_too_small()
+
         # via the event loop, so it is already running before the worker thread starts
         QTimer.singleShot(0, self.auto_refresh) # kick it off!
+
+    def _warn_if_window_too_small(self):
+        """
+        check the WHOLE window, not just the table.
+
+        _warn_if_layout_overflows only measures the grid, so the timestamp and the row of
+        buttons could push past the bottom edge without anything saying so.  on a normal
+        desktop the window simply grows, which is fine; in full screen it cannot, and the
+        buttons are what falls off.
+        """
+        central = self.centralWidget()
+        if central is None:
+            return
+
+        needed = central.sizeHint()
+
+        if needed.height() <= self.height and needed.width() <= self.width:
+            return
+
+        detail = (f'the contents need {needed.width()}x{needed.height()}px but the window is '
+                  f'{self.width}x{self.height}px')
+
+        if self.is_full_screen:
+            print(f'⚠️  {detail}, and in full screen it cannot grow, so the bottom will be cut '
+                  f'off.  Fixes: reduce font-size in {self.css_file}, lower button_margin '
+                  f'(currently {self.button_margin}), or reduce num_rows_per_table '
+                  f'(currently {self.num_rows_per_table}).')
+        elif self.verbosity >= 1:
+            print(f'ℹ️ {detail}, so the window was grown to fit')
 
 
     def setup_touch(self):
@@ -1271,6 +1310,9 @@ class DVB_Monitor(QMainWindow):
         self.buttons = {}
 
         self.bottom_layout = QHBoxLayout()
+        self.bottom_layout.setSpacing(self.button_spacing)
+        self.bottom_layout.setContentsMargins(self.button_margin, self.button_margin,
+                                              self.button_margin, self.button_margin)
 
         self.setup_timeupdated()
 
