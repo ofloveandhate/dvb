@@ -40,6 +40,12 @@ DEFAULT_CONFIG = {
     # a departure the API gives no real time for gets an infinite number of minutes, which sorts
     # it to the bottom of the table and shows as "inf".  set this false to leave those out.
     "show_infinite_arrivals": True,
+
+    # direction arrows, drawn by the get_direction_arrow column.  working one out costs an api
+    # call, but only the first time for each route at each stop -- every upcoming departure of
+    # that route reuses it.  seconds, like every other duration here; 0 means never recompute.
+    "direction_recompute_interval":  3600,
+    "direction_lookups_per_refresh": 4,
     "verbosity": 0,
     "refresh_forever": False,
 
@@ -131,6 +137,47 @@ mode_emoji = {
     'HailedSharedTaxi': '🚕',
     '': '',
 }
+
+# the modes this app draws direction arrows for.  street transport only: trains run express and
+# stopping services under the same line and headsign, so one cached arrow per route would be wrong
+# for some of them, and we have no cheap way to tell which.
+STREET_MODES = {'Tram', 'CityBus', 'PlusBus', 'IntercityBus'}
+
+# compass sectors, 45 degrees each, starting at north
+DIRECTION_ARROWS = ['↑', '↗', '→', '↘', '↓', '↙', '←', '↖']
+
+# what we have worked out so far: (stop id, line, direction) -> (arrow, when we worked it out).
+# one entry serves every upcoming departure of that route, which is what keeps the api calls down.
+_direction_cache = {}
+
+# the arrow for each departure currently on screen, by trip id.  rebuilt every refresh, so it
+# cannot grow without bound.  the getters are plain functions with no idea which stop they are
+# drawing, so they look themselves up in here.
+_direction_by_trip = {}
+
+
+def bearing_degrees(from_coords, to_coords):
+    """
+    compass bearing from one coordinate to another, 0 = north, clockwise.
+
+    the plain great-circle formula rather than a geodesic library: over the few hundred metres
+    between neighbouring stops it agrees with pyproj to better than a tenth of a degree, and the
+    arrows are 45 degree sectors, so nothing here is close to mattering.
+    """
+    lat1, lng1 = math.radians(from_coords.lat), math.radians(from_coords.lng)
+    lat2, lng2 = math.radians(to_coords.lat), math.radians(to_coords.lng)
+    dlng = lng2 - lng1
+
+    y = math.sin(dlng) * math.cos(lat2)
+    x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(dlng)
+
+    return (math.degrees(math.atan2(y, x)) + 360) % 360
+
+
+def arrow_for_bearing(degrees):
+    """the arrow for a compass bearing, rounded to the nearest of the eight sectors."""
+    return DIRECTION_ARROWS[int(((degrees % 360) + 22.5) // 45) % 8]
+
 
 # set from config in setup_from_yaml.  the getters are module-level functions reached through
 # GETTER_REGISTRY, so they have no `self` to read config from.
@@ -279,6 +326,16 @@ def get_line_w_mode(departure):
 def get_destination(departure):
     return getattr(departure, 'direction', '?')
 
+def get_direction_arrow(departure):
+    """
+    which way this service leaves the stop, as a little arrow.
+
+    blank until we have worked it out, and blank for anything we do not draw arrows for.  see
+    resolve_direction_arrows for where the arrows come from.
+    """
+    return _direction_by_trip.get(getattr(departure, 'id', None), '')
+
+
 def get_minutes(departure):
     """
     compute the number of minutes, rounded down via integer arithmetic, to departure.
@@ -313,6 +370,7 @@ GETTER_REGISTRY = {
     "get_line_w_mode" : get_line_w_mode,
     "get_destination" : get_destination,
     "get_minutes"     : get_minutes,
+    "get_direction_arrow" : get_direction_arrow,
 }
 
 ALIGNMENT_REGISTRY = {
@@ -326,7 +384,9 @@ ALIGNMENT_REGISTRY = {
 
 # what one attempt at one stop produced.  `error` is None on success.
 # immutable on purpose: it gets handed across the thread boundary in the background fetcher.
-FetchResult = namedtuple("FetchResult", ["stop_name", "departures", "stop_id", "error", "duration"])
+FetchResult = namedtuple("FetchResult",
+                         ["stop_name", "departures", "stop_id", "stop_coords",
+                          "arrows", "error", "duration"])
 
 
 def _short_err(e, limit=48):
@@ -348,7 +408,8 @@ def _short_err(e, limit=48):
     return text
 
 
-def fetch_departures_for_stop(client, stop_name, stop_id=None, verbosity=0):
+def fetch_departures_for_stop(client, stop_name, stop_id=None, stop_coords=None, verbosity=0,
+                              want_coords=False):
     """
     fetch and sort the departures for one stop.
 
@@ -361,17 +422,22 @@ def fetch_departures_for_stop(client, stop_name, stop_id=None, verbosity=0):
     t_start = time.monotonic()
 
     def failed(msg):
-        return FetchResult(stop_name, None, stop_id, msg, time.monotonic() - t_start)
+        return FetchResult(stop_name, None, stop_id, stop_coords, {}, msg, time.monotonic() - t_start)
 
     try:
         # resolve the name to a numeric id ourselves, so it can be cached by the caller.  dvb's
         # monitor() would otherwise do this lookup internally on every single call -- that's two
         # http requests per stop per refresh instead of one.
-        if not stop_id:
-            try:
-                stop_id = client._resolve_stop_id(stop_name)
-            except AttributeError:
-                stop_id = None   # private api gone in some future dvb; fall back to the name
+        # find() hands back the numeric id and the coordinates together.  only ask for it when
+        # something is actually missing: the coordinates are for the direction arrows, so a
+        # config without that column should never pay for a lookup.
+        if not stop_id or (want_coords and stop_coords is None):
+            found = client.find(stop_name)
+            if isinstance(found, list) and found:
+                stop_id = found[0].id
+                # coordinates are only wanted for the direction arrows, so a dvb that stops
+                # handing them out costs us arrows, not departures
+                stop_coords = getattr(found[0], 'coords', None)
 
         departures = client.monitor(stop=stop_id or stop_name, limit=0)
 
@@ -383,7 +449,8 @@ def fetch_departures_for_stop(client, stop_name, stop_id=None, verbosity=0):
         # sorting lives in here, inside the guard, so a malformed departure can't kill the refresh
         departures.sort(key=get_minutes)
 
-        return FetchResult(stop_name, departures, stop_id, None, time.monotonic() - t_start)
+        return FetchResult(stop_name, departures, stop_id, stop_coords, {}, None,
+                           time.monotonic() - t_start)
 
     # these two subclass dvb.DVBError, so they must be caught before the bare Exception below.
     # referenced qualified, because a bare `from dvb import ConnectionError` shadows the builtin.
@@ -497,6 +564,85 @@ class TouchFilter(QObject):
         return False
 
 
+def resolve_direction_arrows(client, stop_id, stop_coords, departures,
+                             budget, recompute_interval, verbosity=0):
+    """
+    work out which way each departure leaves this stop.  never raises.
+
+    one lookup per (line, direction), not per departure: every upcoming service of a route
+    leaves the same way, so fifteen departures usually cost four to twelve calls, and nothing
+    at all once they are cached.
+
+    `budget` caps how many lookups this call may make, so a cold start trickles in over a few
+    refreshes instead of firing everything at once.  returns (arrows by trip id, lookups used).
+    """
+    arrows = {}
+    used = 0
+
+    if stop_coords is None:
+        return arrows, used
+
+    now = time.monotonic()
+
+    for departure in departures:
+        try:
+            if departure.mode not in STREET_MODES:
+                continue
+
+            key = (str(stop_id), departure.line, departure.direction)
+        except Exception:
+            continue   # a departure we cannot even read is not going to get an arrow
+
+        cached = _direction_cache.get(key)
+
+        # 0 means never recompute, so a cached arrow stays put for the life of the process
+        if cached is not None:
+            arrow, computed_at = cached
+            if not recompute_interval or (now - computed_at) < recompute_interval:
+                if arrow:
+                    arrows[departure.id] = arrow
+                continue
+
+        if used >= budget:
+            continue   # out of lookups for this refresh; try again next time
+
+        used += 1
+        arrow = _look_up_arrow(client, stop_id, stop_coords, departure, verbosity)
+        _direction_cache[key] = (arrow, now)
+
+        if arrow:
+            arrows[departure.id] = arrow
+
+    return arrows, used
+
+
+def _look_up_arrow(client, stop_id, stop_coords, departure, verbosity=0):
+    """the arrow for one departure, or '' if we cannot work it out.  never raises."""
+    try:
+        trip = client.trip_details(departure.id, departure.scheduled, stop_id)
+
+        ids = [str(s.id) for s in trip]
+        here = ids.index(str(stop_id))
+
+        if here + 1 >= len(trip):
+            return ''   # we are the last stop, so it is not going anywhere from here
+
+        next_stop = trip[here + 1]
+        arrow = arrow_for_bearing(bearing_degrees(stop_coords, next_stop.coords))
+
+        if verbosity >= 1:
+            print(f'ℹ️ {departure.line} -> {departure.direction}: {arrow} (next stop {next_stop.name})')
+
+        return arrow
+
+    except Exception as e:
+        # an arrow is a nicety.  never let one break a refresh.
+        if verbosity >= 1:
+            print(f'⚠️ could not work out a direction for {departure.line} -> '
+                  f'{departure.direction}: {type(e).__name__}')
+        return ''
+
+
 class DepartureFetcher(QThread):
     """
     fetches stops off the gui thread, so a slow or hung api never freezes the display.
@@ -509,20 +655,36 @@ class DepartureFetcher(QThread):
     stop_fetched = pyqtSignal(object)  # one FetchResult, emitted as each stop lands
     all_finished = pyqtSignal()
 
-    def __init__(self, client, jobs, verbosity=0, parent=None):
+    def __init__(self, client, jobs, verbosity=0, parent=None,
+                 direction_budget=0, direction_recompute_interval=0):
         super().__init__(parent)
         self.client    = client
-        self.jobs      = jobs       # [(stop_name, stop_id_or_None)], snapshotted on the gui thread
+        self.jobs      = jobs       # [(stop_name, stop_id, coords)], snapshotted on the gui thread
         self.verbosity = verbosity
 
+        # shared across every stop in this refresh, so the cap is per refresh and not per stop
+        self.direction_budget = direction_budget
+        self.direction_recompute_interval = direction_recompute_interval
+
     def run(self):
-        for stop_name, stop_id in self.jobs:
+        for stop_name, stop_id, stop_coords in self.jobs:
             if self.isInterruptionRequested():
                 break
 
-            # the FetchResult carries back the resolved stop id, so the gui thread can cache it
-            self.stop_fetched.emit(
-                fetch_departures_for_stop(self.client, stop_name, stop_id, self.verbosity))
+            # the FetchResult carries back the resolved stop id and coords, so the gui thread
+            # can cache them
+            result = fetch_departures_for_stop(self.client, stop_name, stop_id, stop_coords,
+                                               self.verbosity,
+                                               want_coords=self.direction_budget > 0)
+
+            if result.error is None and self.direction_budget > 0:
+                arrows, used = resolve_direction_arrows(
+                    self.client, result.stop_id, result.stop_coords, result.departures,
+                    self.direction_budget, self.direction_recompute_interval, self.verbosity)
+                self.direction_budget -= used
+                result = result._replace(arrows=arrows)
+
+            self.stop_fetched.emit(result)
 
         self.all_finished.emit()
 
@@ -747,6 +909,7 @@ class DVB_Monitor(QMainWindow):
         self.stop_error        = {}   # stop name -> short message from the last failure
         self.stop_last_success = {}   # stop name -> datetime of the last good fetch
         self.stop_id_cache     = {}   # stop name -> numeric dvb id
+        self.stop_coords_cache = {}   # stop name -> its coordinates, for the direction arrows
 
         self.num_consecutive_failures = 0   # counts refreshes where EVERY stop failed
         self.fetcher                  = None # the background QThread, when one is in flight
@@ -941,6 +1104,14 @@ class DVB_Monitor(QMainWindow):
         self.num_departures_to_monitor = config["num_departures_to_monitor"]
 
         self.show_infinite_arrivals = bool(config["show_infinite_arrivals"])
+
+        self.direction_recompute_interval  = max(0, int(config["direction_recompute_interval"]))
+        self.direction_lookups_per_refresh = max(0, int(config["direction_lookups_per_refresh"]))
+
+        # if no column draws arrows there is nothing to look up, and nobody should be paying api
+        # calls for something they cannot see
+        if not any(col.getter is get_direction_arrow for col in self.columns):
+            self.direction_lookups_per_refresh = 0
 
         self.is_full_screen = config["is_full_screen"]
         self.is_touch = config["is_touch"]
@@ -1504,7 +1675,8 @@ class DVB_Monitor(QMainWindow):
                 if self.verbosity>=1:
                     print(f'mock getting departures for {stop_name}')
                 continue
-            jobs.append((stop_name, self._resolve_stop_id(stop_name)))
+            jobs.append((stop_name, self._resolve_stop_id(stop_name),
+                         self.stop_coords_cache.get(stop_name)))
         return jobs
 
     def _refresh_all_departures(self):
@@ -1514,12 +1686,24 @@ class DVB_Monitor(QMainWindow):
         per-stop isolated: a failure on one stop no longer prevents the others from updating,
         and the loop as a whole cannot raise.
         """
-        for stop_name, stop_id in self._pending_jobs():
+        budget = self.direction_lookups_per_refresh
+
+        for stop_name, stop_id, stop_coords in self._pending_jobs():
             if self.verbosity>=1:
                 print(f'getting departures for {stop_name}')
 
-            self._record_stop_result(
-                fetch_departures_for_stop(self.client, stop_name, stop_id, self.verbosity))
+            result = fetch_departures_for_stop(self.client, stop_name, stop_id, stop_coords,
+                                               self.verbosity,
+                                               want_coords=budget > 0)
+
+            if result.error is None and budget > 0:
+                arrows, used = resolve_direction_arrows(
+                    self.client, result.stop_id, result.stop_coords, result.departures,
+                    budget, self.direction_recompute_interval, self.verbosity)
+                budget -= used
+                result = result._replace(arrows=arrows)
+
+            self._record_stop_result(result)
 
     def _record_stop_result(self, result):
         """
@@ -1535,6 +1719,12 @@ class DVB_Monitor(QMainWindow):
 
             if result.stop_id:
                 self.stop_id_cache[result.stop_name] = result.stop_id
+            if result.stop_coords is not None:
+                self.stop_coords_cache[result.stop_name] = result.stop_coords
+
+            # the getters have no idea which stop they are drawing, so they read the arrows out
+            # of a module level table keyed by trip id
+            _direction_by_trip.update(result.arrows)
 
             if self.verbosity>=1:
                 print(f'✅ {result.stop_name}: {len(result.departures)} departures '
@@ -1618,10 +1808,13 @@ class DVB_Monitor(QMainWindow):
             return
 
         if self.verbosity>=1:
-            for stop_name, _ in jobs:
+            for stop_name, _, _ in jobs:
                 print(f'getting departures for {stop_name}')
 
-        self.fetcher = DepartureFetcher(self.client, jobs, self.verbosity, parent=self)
+        self.fetcher = DepartureFetcher(
+            self.client, jobs, self.verbosity, parent=self,
+            direction_budget=self.direction_lookups_per_refresh,
+            direction_recompute_interval=self.direction_recompute_interval)
         self.fetcher.stop_fetched.connect(self._on_stop_fetched)
         self.fetcher.all_finished.connect(self._on_fetch_finished)
         self.fetcher.start()

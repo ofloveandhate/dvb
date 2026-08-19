@@ -100,6 +100,61 @@ minutes, which sorts them to the bottom of the table and shows as `inf`.
 Set it to `false` to leave them out. They sort last either way, so hiding them never displaces a
 departure that does have a time -- it just frees up the rows at the bottom they were occupying.
 
+## Direction arrows
+
+An optional column showing which way each service leaves the stop, as a little arrow:
+
+```yaml
+  - header: ""
+    width: 24
+    getter: get_direction_arrow
+    alignment: center
+```
+
+`config_pitft.yaml` has it switched on. Add the column to any other config to get it there too --
+it is off unless a column asks for it, and costs nothing at all if you leave it out.
+
+### How it works, and what it costs
+
+The API does not say which way a departure is heading, so the app works it out: it asks for the
+stops along the trip, takes the one after yours, and turns the compass bearing between the two
+into one of eight arrows. Your stop's coordinates arrive with the stop-id lookup the app already
+does, so they are free.
+
+The trip lookup is not free, so it happens **once per route per stop**, not once per departure.
+Every upcoming service of the same line and direction reuses the answer. At Altmarkt that turns
+fifteen departures into six lookups; at Pirnaischerplatz, into eleven.
+
+| setting | default | meaning |
+| --- | --- | --- |
+| `direction_recompute_interval` | 3600 | seconds before a cached arrow is worked out again; `0` never recomputes |
+| `direction_lookups_per_refresh` | 4 | most lookups any one refresh may make |
+
+Once the arrows are known, a refresh costs exactly what it always did: **one API call per stop**.
+The lookups only happen when an arrow is new or has gone stale.
+
+`direction_lookups_per_refresh` spreads the cold start out rather than firing everything at once.
+Three stops with 29 routes between them fill in over about eight refreshes, drawing blank arrows
+until each one resolves.
+
+`direction_recompute_interval` exists because routes do change -- a line can take a different path
+once the night schedule starts, without changing its number or its destination. Recomputing every
+hour bounds how long an arrow can be wrong. Set it to `0` if you would rather never spend the
+calls, and restart the app when the timetable changes.
+
+### What it does not do
+
+Arrows are drawn for trams and buses only. Trains run express and stopping services under the
+same line and destination, so a single cached arrow would be wrong for some of them and there is
+no cheap way to tell which.
+
+The arrow is the direction the service leaves *this* stop, which is not always the direction of
+its destination -- a route that loops or doubles back will point somewhere that looks surprising
+until you follow it on a map.
+
+Anything the app cannot work out is simply left blank: a terminus, a stop missing from the trip
+data, or a lookup that failed.
+
 ## Changing how it looks
 
 `style.css` is the default; `style_pitft.css` is tuned for the 480x320 Adafruit PiTFT. Point at

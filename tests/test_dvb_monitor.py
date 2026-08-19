@@ -1356,3 +1356,251 @@ def test_hidden_infinite_arrivals_free_up_the_rows_they_occupied(qapp, tmp_path)
 
     assert shown == ['2', '5', '8', '11', 'inf', 'inf']   # two rows spent on untimed arrivals
     assert hidden == ['2', '5', '8', '11']                # those rows now simply empty
+
+
+# --------------------------------------------------------------------------------------
+# direction arrows
+# --------------------------------------------------------------------------------------
+
+from fake_dvb_client import ORIGIN_LAT, ORIGIN_LNG, coords as fake_coords
+
+
+@pytest.fixture(autouse=True)
+def _clear_direction_caches():
+    """The arrow caches are module level, so one test must not leak into the next."""
+    dm._direction_cache.clear()
+    dm._direction_by_trip.clear()
+    yield
+    dm._direction_cache.clear()
+    dm._direction_by_trip.clear()
+
+
+def street_departures(specs):
+    """specs is [(trip_id, line, direction)], all trams."""
+    now = datetime.now(timezone.utc)
+    return [FakeDeparture(line=line, direction=direction, mode='Tram',
+                          real_time=now + timedelta(minutes=2 + i), id=trip_id)
+            for i, (trip_id, line, direction) in enumerate(specs)]
+
+
+ORIGIN = fake_coords(ORIGIN_LAT, ORIGIN_LNG)
+
+
+@pytest.mark.parametrize('dlat,dlng,expected', [
+    ( 0.01,  0.00, '↑'),   # due north
+    ( 0.00,  0.01, '→'),   # due east
+    (-0.01,  0.00, '↓'),   # due south
+    ( 0.00, -0.01, '←'),   # due west
+    ( 0.01,  0.016, '↗'),  # north east
+])
+def test_bearing_becomes_the_right_arrow(dlat, dlng, expected):
+    to = fake_coords(ORIGIN_LAT + dlat, ORIGIN_LNG + dlng)
+    assert dm.arrow_for_bearing(dm.bearing_degrees(ORIGIN, to)) == expected
+
+
+def test_bearing_wraps_around_north():
+    assert dm.arrow_for_bearing(359.9) == '↑'
+    assert dm.arrow_for_bearing(0.1) == '↑'
+    assert dm.arrow_for_bearing(-90) == '←'
+
+
+def test_arrow_is_blank_until_we_know_it():
+    assert dm.get_direction_arrow(FakeDeparture(id='unknown-trip')) == ''
+    assert dm.get_direction_arrow(object()) == ''
+
+
+def test_one_lookup_serves_every_departure_of_a_route():
+    """The whole point: fifteen departures must not cost fifteen calls."""
+    client = FakeClient()
+    departures = street_departures([
+        ('t1', '9', 'Kaditz'), ('t2', '9', 'Kaditz'), ('t3', '9', 'Kaditz'),
+        ('t4', '2', 'Gorbitz'), ('t5', '2', 'Gorbitz'),
+    ])
+
+    arrows, used = dm.resolve_direction_arrows(client, '33000004', ORIGIN, departures,
+                                               budget=10, recompute_interval=3600)
+
+    assert used == 2                      # two distinct (line, direction), not five departures
+    assert len(client.trip_calls) == 2
+    assert len(arrows) == 5               # but every departure gets an arrow
+    assert len(set(arrows.values())) == 1 # all east, per the fake's default next stop
+
+
+def test_a_second_refresh_costs_nothing():
+    client = FakeClient()
+    departures = street_departures([('t1', '9', 'Kaditz'), ('t2', '2', 'Gorbitz')])
+
+    dm.resolve_direction_arrows(client, '33000004', ORIGIN, departures, 10, 3600)
+    before = len(client.trip_calls)
+    arrows, used = dm.resolve_direction_arrows(client, '33000004', ORIGIN, departures, 10, 3600)
+
+    assert used == 0
+    assert len(client.trip_calls) == before
+    assert len(arrows) == 2               # still drawn, straight from the cache
+
+
+def test_the_budget_caps_lookups_per_refresh():
+    client = FakeClient()
+    departures = street_departures([(f't{i}', str(i), f'Dir {i}') for i in range(10)])
+
+    arrows, used = dm.resolve_direction_arrows(client, '33000004', ORIGIN, departures,
+                                               budget=3, recompute_interval=3600)
+
+    assert used == 3
+    assert len(client.trip_calls) == 3
+    assert len(arrows) == 3               # the rest stay blank and get picked up next refresh
+
+
+def test_the_budget_picks_up_where_it_left_off():
+    client = FakeClient()
+    departures = street_departures([(f't{i}', str(i), f'Dir {i}') for i in range(5)])
+
+    dm.resolve_direction_arrows(client, '33000004', ORIGIN, departures, 2, 3600)
+    arrows, used = dm.resolve_direction_arrows(client, '33000004', ORIGIN, departures, 2, 3600)
+
+    assert used == 2
+    assert len(arrows) == 4               # two from the first pass, two from this one
+
+
+def test_the_same_route_at_different_stops_is_cached_separately():
+    """A line leaves one stop east and another west; the stop has to be part of the key."""
+    client = FakeClient(next_stop_offsets={'t1': (0.0, 0.01), 't2': (0.0, -0.01)})
+    a = street_departures([('t1', '9', 'Kaditz')])
+    b = street_departures([('t2', '9', 'Kaditz')])
+
+    arrows_a, _ = dm.resolve_direction_arrows(client, '11111', ORIGIN, a, 5, 3600)
+    arrows_b, _ = dm.resolve_direction_arrows(client, '22222', ORIGIN, b, 5, 3600)
+
+    assert arrows_a['t1'] == '→'
+    assert arrows_b['t2'] == '←'
+
+
+def test_trains_do_not_get_arrows():
+    """Express and stopping services share a line and headsign, so one cached arrow would lie."""
+    client = FakeClient()
+    now = datetime.now(timezone.utc)
+    departures = [FakeDeparture(line='RB60', direction='Görlitz', mode='SuburbanRailway',
+                                real_time=now, id='train-1'),
+                  FakeDeparture(line='9', direction='Kaditz', mode='Tram',
+                                real_time=now, id='tram-1')]
+
+    arrows, used = dm.resolve_direction_arrows(client, '33000004', ORIGIN, departures, 10, 3600)
+
+    assert used == 1
+    assert 'train-1' not in arrows
+    assert 'tram-1' in arrows
+
+
+def test_a_terminus_gets_no_arrow():
+    client = FakeClient(trip_behaviour={'t1': 'terminus'})
+    arrows, used = dm.resolve_direction_arrows(
+        client, '33000004', ORIGIN, street_departures([('t1', '9', 'Kaditz')]), 5, 3600)
+
+    assert arrows == {}
+    assert used == 1          # we spent the lookup, and we remember the answer
+
+
+def test_a_stop_missing_from_the_trip_gets_no_arrow():
+    client = FakeClient(trip_behaviour={'t1': 'absent'})
+    arrows, _ = dm.resolve_direction_arrows(
+        client, '33000004', ORIGIN, street_departures([('t1', '9', 'Kaditz')]), 5, 3600)
+
+    assert arrows == {}
+
+
+@pytest.mark.parametrize('failure', [
+    dvb.ConnectionError('503 Service Unavailable'),
+    dvb.APIError('API returned status: ServiceError'),
+    KeyError('Stops'),
+    RuntimeError('something nobody predicted'),
+])
+def test_a_failed_lookup_never_breaks_anything(failure):
+    client = FakeClient(trip_behaviour={'t1': failure})
+    arrows, used = dm.resolve_direction_arrows(
+        client, '33000004', ORIGIN, street_departures([('t1', '9', 'Kaditz')]), 5, 3600)
+
+    assert arrows == {}
+    assert used == 1
+
+
+def test_resolving_never_raises_on_an_unreadable_departure():
+    class Exploding:
+        mode = 'Tram'
+        @property
+        def line(self):
+            raise RuntimeError('boom')
+
+    arrows, used = dm.resolve_direction_arrows(FakeClient(), '33000004', ORIGIN,
+                                               [Exploding()], 5, 3600)
+    assert arrows == {}
+    assert used == 0
+
+
+def test_no_coordinates_means_no_arrows_and_no_calls():
+    client = FakeClient()
+    arrows, used = dm.resolve_direction_arrows(
+        client, '33000004', None, street_departures([('t1', '9', 'Kaditz')]), 5, 3600)
+
+    assert arrows == {}
+    assert used == 0
+    assert client.trip_calls == []
+
+
+def test_recompute_interval_of_zero_never_looks_again():
+    client = FakeClient()
+    departures = street_departures([('t1', '9', 'Kaditz')])
+
+    dm.resolve_direction_arrows(client, '33000004', ORIGIN, departures, 5, 0)
+    # pretend a very long time has passed
+    key = ('33000004', '9', 'Kaditz')
+    arrow, _ = dm._direction_cache[key]
+    dm._direction_cache[key] = (arrow, -1e9)
+
+    _, used = dm.resolve_direction_arrows(client, '33000004', ORIGIN, departures, 5, 0)
+
+    assert used == 0
+
+
+def test_a_stale_entry_is_recomputed():
+    client = FakeClient()
+    departures = street_departures([('t1', '9', 'Kaditz')])
+
+    dm.resolve_direction_arrows(client, '33000004', ORIGIN, departures, 5, 3600)
+    key = ('33000004', '9', 'Kaditz')
+    arrow, computed_at = dm._direction_cache[key]
+    dm._direction_cache[key] = (arrow, computed_at - 7200)   # two hours ago
+
+    _, used = dm.resolve_direction_arrows(client, '33000004', ORIGIN, departures, 5, 3600)
+
+    assert used == 1
+
+
+def test_a_config_without_the_arrow_column_makes_no_extra_calls(qapp, tmp_path):
+    """Nobody should pay for coordinates they are not going to draw."""
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(stops_to_monitor=['Altmarkt'], num_stops_per_page=1)
+
+    monitor = build_from_settings(qapp, tmp_path, 'no_arrows', settings)
+    client = FakeClient()
+    monitor.client = client
+    monitor.refresh()
+    monitor.refresh()
+
+    assert client.trip_calls == []
+    assert len(client.find_calls) == 1     # once for the stop id, never again
+
+
+def test_the_arrow_column_draws_through_the_getter_registry(qapp, tmp_path):
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(
+        stops_to_monitor=['Altmarkt'], num_stops_per_page=1, window_width=900,
+        columns=[{'header': '#', 'width': 60, 'getter': 'get_line', 'alignment': 'center'},
+                 {'header': '', 'width': 60, 'getter': 'get_direction_arrow',
+                  'alignment': 'center'}])
+
+    monitor = build_from_settings(qapp, tmp_path, 'arrow_column', settings)
+    monitor.client = FakeClient(default=street_departures([('t1', '9', 'Kaditz')]))
+    monitor.refresh()
+
+    table = monitor.tables[0]
+    assert table.labels[(0, 1)].text() == '→'
