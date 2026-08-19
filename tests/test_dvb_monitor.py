@@ -142,7 +142,8 @@ def config_path(tmp_path):
         'window_height': 400,
         'css_file': os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                  'style.css'),
-        'fetch_in_background': False,   # synchronous, so assertions can run right after refresh()
+        'fetch_in_background': False,
+        'scale_with_screen_dpi': False,   # keep pixel assertions DPI-independent   # synchronous, so assertions can run right after refresh()
         'verbosity': 0,
     }
     path = tmp_path / 'config.yaml'
@@ -314,6 +315,7 @@ def test_change_page_does_not_divide_by_zero(qapp, tmp_path):
         'css_file': os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                  'style.css'),
         'fetch_in_background': False,
+        'scale_with_screen_dpi': False,   # keep pixel assertions DPI-independent
         'verbosity': 0,
     }
     path = tmp_path / 'one_stop.yaml'
@@ -348,6 +350,7 @@ def test_all_pages_are_reachable(qapp, tmp_path):
         'css_file': os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                  'style.css'),
         'fetch_in_background': False,
+        'scale_with_screen_dpi': False,   # keep pixel assertions DPI-independent
         'verbosity': 0,
     }
     path = tmp_path / 'four.yaml'
@@ -362,13 +365,22 @@ def test_all_pages_are_reachable(qapp, tmp_path):
 # config loading
 # --------------------------------------------------------------------------------------
 
-def test_empty_config_file_exits_cleanly(qapp, tmp_path):
-    """An empty yaml parses to None; `"x" not in None` used to raise a bare TypeError."""
+def test_empty_config_file_falls_back_to_defaults(qapp, tmp_path):
+    """
+    An empty yaml parses to None; `"x" not in None` used to raise a bare TypeError.
+
+    It also used to be rejected outright for lacking dvb_client_name. Now that the client name
+    lives outside the config, an empty config is simply every default.
+    """
+    (tmp_path / dm.CLIENT_NAME_FILENAME).write_text('Me <me@example.com>', encoding='utf-8')
+
     path = tmp_path / 'empty.yaml'
     path.write_text('', encoding='utf-8')
 
-    with pytest.raises((SystemExit, RuntimeError)):
-        build_monitor(qapp, str(path), FakeClient())
+    monitor = build_monitor(qapp, str(path), FakeClient())
+
+    assert monitor.stops_to_monitor == dm.DEFAULT_CONFIG['stops_to_monitor']
+    assert monitor.dvb_client_name == 'Me <me@example.com>'
 
 
 def test_config_that_is_a_list_exits_cleanly(qapp, tmp_path):
@@ -524,6 +536,7 @@ def test_fewer_stops_than_slots_per_page(qapp, tmp_path):
         'css_file': os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                  'style.css'),
         'fetch_in_background': False,
+        'scale_with_screen_dpi': False,   # keep pixel assertions DPI-independent
         'verbosity': 0,
     }
     path = tmp_path / 'one_stop_three_slots.yaml'
@@ -548,6 +561,7 @@ def test_partial_last_page_blanks_the_unused_table(qapp, tmp_path):
         'css_file': os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                  'style.css'),
         'fetch_in_background': False,
+        'scale_with_screen_dpi': False,   # keep pixel assertions DPI-independent
         'verbosity': 0,
     }
     path = tmp_path / 'three_two.yaml'
@@ -602,6 +616,7 @@ def write_config(tmp_path, name, css, **overrides):
         'window_height': 900,
         'css_file': str(css_path),
         'fetch_in_background': False,
+        'scale_with_screen_dpi': False,   # keep pixel assertions DPI-independent
         'verbosity': 0,
     }
     config.update(overrides)
@@ -611,16 +626,20 @@ def write_config(tmp_path, name, css, **overrides):
     return str(path)
 
 
-def css_with_cell_font(points):
+def css_with_cell_font(pixels):
+    """
+    Deliberately px rather than pt: pt is converted to pixels using the screen's DPI, which
+    would make every pixel assertion below depend on whatever machine the suite runs on.
+    """
     return f'''
 QLabel[class="grid_cell"] {{
-    font-size: {points}pt;
+    font-size: {pixels}px;
     color: #ffffff;
     background-color: #1a1a1a;
     border: 1px solid #2a2a2a;
     padding: 2px;
 }}
-QLabel[class="grid_header"] {{ font-size: {points}pt; }}
+QLabel[class="grid_header"] {{ font-size: {pixels}px; }}
 '''
 
 
@@ -728,3 +747,341 @@ def test_stylesheets_shipped_with_the_app_only_style_classes_that_exist(qapp):
         css = open(os.path.join(root, name), encoding='utf-8').read()
         defined = set(re.findall(r'class="([^"]+)"', css))
         assert defined <= applied, f'{name} styles classes no widget ever gets: {defined - applied}'
+
+
+# --------------------------------------------------------------------------------------
+# where the DVB client name comes from
+# --------------------------------------------------------------------------------------
+
+def test_client_name_file_reads_the_first_meaningful_line(tmp_path):
+    path = tmp_path / dm.CLIENT_NAME_FILENAME
+    path.write_text('# put your details below\n\n  Me <me@example.com>  \nignored second line\n',
+                    encoding='utf-8')
+
+    assert dm.read_client_name_file(str(path)) == 'Me <me@example.com>'
+
+
+def test_client_name_file_that_is_missing_or_empty(tmp_path):
+    assert dm.read_client_name_file(str(tmp_path / 'nope.txt')) is None
+
+    blank = tmp_path / 'blank.txt'
+    blank.write_text('\n\n# only a comment\n', encoding='utf-8')
+    assert dm.read_client_name_file(str(blank)) is None
+
+
+def test_search_path_prefers_the_config_directory(tmp_path):
+    search = dm.client_name_search_path(str(tmp_path / 'config.yaml'))
+
+    assert search[0] == str(tmp_path / dm.CLIENT_NAME_FILENAME)
+    # and the checkout itself is the fallback, which is the usual case
+    assert search[-1].endswith(dm.CLIENT_NAME_FILENAME)
+    assert len(search) == len(set(search))   # no duplicate when both dirs coincide
+
+
+def test_the_file_beats_a_config_entry(tmp_path):
+    path = tmp_path / dm.CLIENT_NAME_FILENAME
+    path.write_text('From The File <file@example.com>', encoding='utf-8')
+
+    found = dm.find_client_name([str(path)], config_value='From The Config <cfg@example.com>')
+
+    assert found == 'From The File <file@example.com>'
+
+
+def test_a_config_entry_still_works_when_there_is_no_file(tmp_path):
+    """Back-compat: setups that predate the separate file must keep working."""
+    found = dm.find_client_name([str(tmp_path / dm.CLIENT_NAME_FILENAME)],
+                                config_value='From The Config <cfg@example.com>')
+
+    assert found == 'From The Config <cfg@example.com>'
+
+
+def test_nothing_anywhere_returns_none(tmp_path):
+    assert dm.find_client_name([str(tmp_path / dm.CLIENT_NAME_FILENAME)], config_value=None) is None
+    assert dm.find_client_name([str(tmp_path / dm.CLIENT_NAME_FILENAME)], config_value='') is None
+
+
+def test_the_missing_message_names_a_real_path_and_the_fallback(tmp_path):
+    search = dm.client_name_search_path(str(tmp_path / 'config.yaml'))
+    message = dm.missing_client_name_message(search)
+
+    assert dm.CLIENT_NAME_FILENAME in message
+    assert 'gitignored' in message
+    assert 'dvb_client_name:' in message   # tells you the config entry still works
+
+
+def test_config_without_a_client_name_entry_starts(qapp, tmp_path):
+    """
+    The whole point: a config file you can commit. This used to raise
+    'required entry `dvb_client_name` not found'.
+    """
+    import yaml
+    (tmp_path / dm.CLIENT_NAME_FILENAME).write_text('Me <me@example.com>', encoding='utf-8')
+
+    config = {
+        'stops_to_monitor': ['Altmarkt'],
+        'num_stops_per_page': 1,
+        'num_rows_per_table': 6,
+        'window_width': 1300,
+        'window_height': 900,
+        'css_file': os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                 'style.css'),
+        'fetch_in_background': False,
+        'scale_with_screen_dpi': False,   # keep pixel assertions DPI-independent
+        'verbosity': 0,
+    }
+    path = tmp_path / 'no_client_name.yaml'
+    path.write_text(yaml.safe_dump(config), encoding='utf-8')
+
+    monitor = build_monitor(qapp, str(path), FakeClient())
+
+    assert monitor.dvb_client_name == 'Me <me@example.com>'
+
+
+def test_the_file_beside_the_config_wins_end_to_end(qapp, tmp_path):
+    import yaml
+    (tmp_path / dm.CLIENT_NAME_FILENAME).write_text('File Wins <file@example.com>', encoding='utf-8')
+
+    config = {
+        'dvb_client_name': 'Config Loses <cfg@example.com>',
+        'stops_to_monitor': ['Altmarkt'],
+        'num_stops_per_page': 1,
+        'num_rows_per_table': 6,
+        'window_width': 1300,
+        'window_height': 900,
+        'css_file': os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                 'style.css'),
+        'fetch_in_background': False,
+        'scale_with_screen_dpi': False,   # keep pixel assertions DPI-independent
+        'verbosity': 0,
+    }
+    path = tmp_path / 'both.yaml'
+    path.write_text(yaml.safe_dump(config), encoding='utf-8')
+
+    monitor = build_monitor(qapp, str(path), FakeClient())
+
+    assert monitor.dvb_client_name == 'File Wins <file@example.com>'
+
+
+def test_shipped_configs_carry_no_contact_details():
+    """
+    Every committed config must be safe to commit and to share. This is the regression that
+    started all of it -- one of them used to ship a blank dvb_client_name placeholder.
+    """
+    import glob, yaml
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    shipped = glob.glob(os.path.join(root, 'config*.yaml'))
+
+    assert shipped, 'expected some committed config files'
+
+    for path in shipped:
+        loaded = yaml.safe_load(open(path, encoding='utf-8')) or {}
+        assert 'dvb_client_name' not in loaded, (
+            f'{os.path.basename(path)} carries a dvb_client_name; it belongs in '
+            f'{dm.CLIENT_NAME_FILENAME}, which is gitignored')
+
+
+def test_the_client_name_file_is_gitignored():
+    """A file we tell people to create must actually be ignored, or this all backfires."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ignored = open(os.path.join(root, '.gitignore'), encoding='utf-8').read()
+
+    assert dm.CLIENT_NAME_FILENAME in ignored
+
+
+def test_backups_of_the_client_name_file_are_gitignored():
+    """
+    Editors and hand-made backups leave dvb_client_name.txt.bak / .save / ~ next to the real
+    one.  An exact-filename ignore leaves those staged by `git add -A`, which leaks exactly the
+    contact details this whole arrangement exists to keep out of the repo.
+    """
+    import subprocess
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    for suffix in ('.bak', '.save', '~', '.orig'):
+        candidate = dm.CLIENT_NAME_FILENAME + suffix
+        result = subprocess.run(['git', 'check-ignore', '-q', candidate],
+                                cwd=root, capture_output=True)
+        assert result.returncode == 0, f'{candidate} is not gitignored'
+
+
+# --------------------------------------------------------------------------------------
+# the shipped defaults and configs must fit their own windows
+# --------------------------------------------------------------------------------------
+
+def shipped_config_paths():
+    import glob
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return sorted(glob.glob(os.path.join(root, 'config*.yaml')))
+
+
+def build_from_settings(qapp, tmp_path, name, settings, scale_with_dpi=False):
+    """
+    Build a monitor from a settings dict, neutralising anything hardware-specific.
+
+    scale_with_dpi defaults off so pixel assertions mean what they say on any screen. Tests
+    about whether real usage warns should pass True, since that is what actually happens.
+    """
+    import yaml
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    settings = dict(settings)
+    settings.update(
+        use_backlight_control=False,   # no backlight device under pytest
+        is_full_screen=False,
+        is_touch=False,
+        fetch_in_background=False,
+        scale_with_screen_dpi=scale_with_dpi,
+        verbosity=0,
+    )
+    settings.setdefault('css_file', 'style.css')
+    # css_file is resolved relative to the working directory; anchor it to the checkout
+    if not os.path.isabs(settings['css_file']):
+        settings['css_file'] = os.path.join(root, settings['css_file'])
+
+    (tmp_path / dm.CLIENT_NAME_FILENAME).write_text('Me <me@example.com>', encoding='utf-8')
+
+    path = tmp_path / f'{name}.yaml'
+    path.write_text(yaml.safe_dump(settings), encoding='utf-8')
+    return build_monitor(qapp, str(path), FakeClient())
+
+
+def test_the_built_in_defaults_produce_no_size_warnings(qapp, tmp_path):
+    """
+    --generate-config used to emit a config whose "Mins" column was too narrow for the word
+    "Mins", and whose grid was 490px wide in a 480px window.
+    """
+    monitor = build_from_settings(qapp, tmp_path, 'defaults', dm.DEFAULT_CONFIG,
+                                  scale_with_dpi=True)
+    table = monitor.tables[0]
+
+    assert table.narrow_columns() == []
+    assert table.width() <= monitor.width
+    assert table.total_height() <= monitor.height
+
+
+@pytest.mark.parametrize('config_path', shipped_config_paths(),
+                         ids=lambda p: os.path.basename(p))
+def test_shipped_configs_produce_no_size_warnings(qapp, tmp_path, config_path):
+    import yaml
+
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(yaml.safe_load(open(config_path, encoding='utf-8')) or {})
+
+    name = os.path.splitext(os.path.basename(config_path))[0]
+    monitor = build_from_settings(qapp, tmp_path, name, settings, scale_with_dpi=True)
+    table = monitor.tables[0]
+
+    assert table.narrow_columns() == [], f'{name}: columns too narrow for their headings'
+    assert table.width() <= monitor.width, f'{name}: grid wider than the window'
+    assert table.total_height() <= monitor.height, f'{name}: grid taller than the window'
+
+
+def test_width_validation_counts_the_gaps_between_column_groups(qapp, tmp_path):
+    """
+    validate_config used to ignore column_group_spacing, so it approved configs whose grid was
+    genuinely wider than the window -- which is how the bad default shipped.
+    """
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings.update(
+        num_departures_to_monitor=12,
+        num_rows_per_table=6,          # -> two column groups, so one gap
+        column_group_spacing=200,      # gaps alone now overflow the window
+        window_width=480,
+    )
+
+    with pytest.raises(SystemExit):
+        build_from_settings(qapp, tmp_path, 'gappy', settings)
+
+
+def test_a_config_that_fits_exactly_is_accepted(qapp, tmp_path):
+    """The gap accounting must not be off by one in the rejecting direction."""
+    settings = dict(dm.DEFAULT_CONFIG)
+    columns = [{'header': 'A', 'width': 100, 'getter': 'get_line', 'alignment': 'left'}]
+    settings.update(
+        columns=columns,
+        num_departures_to_monitor=12,
+        num_rows_per_table=6,          # two groups
+        column_group_spacing=20,
+        window_width=220,              # 100 + 100 + 20, exactly
+    )
+
+    monitor = build_from_settings(qapp, tmp_path, 'exact', settings)
+
+    assert monitor.tables[0].width() == 220
+
+
+# --------------------------------------------------------------------------------------
+# high-DPI screens
+# --------------------------------------------------------------------------------------
+
+class FakeScreen:
+    def __init__(self, dpi):
+        self._dpi = dpi
+
+    def logicalDotsPerInch(self):
+        return self._dpi
+
+
+def test_scale_is_one_on_an_ordinary_screen():
+    assert dm.layout_scale_factor(FakeScreen(96)) == 1.0
+
+
+def test_scale_follows_the_screen_dpi():
+    """
+    Font sizes are in pt, which Qt scales by screen DPI; the layout is in px, which it does not.
+    On a 192dpi screen that made rows overflow and destinations get truncated.
+    """
+    assert dm.layout_scale_factor(FakeScreen(192)) == 2.0
+    assert dm.layout_scale_factor(FakeScreen(144)) == 1.5
+
+
+def test_scale_can_be_turned_off():
+    assert dm.layout_scale_factor(FakeScreen(192), enabled=False) == 1.0
+
+
+def test_scale_survives_a_nonsense_screen():
+    assert dm.layout_scale_factor(None) == 1.0
+    assert dm.layout_scale_factor(FakeScreen(0)) == 1.0
+    assert dm.layout_scale_factor(FakeScreen(-5)) == 1.0
+    # and it refuses to produce an unusable window
+    assert dm.layout_scale_factor(FakeScreen(10000)) <= 4.0
+    assert dm.layout_scale_factor(FakeScreen(1)) >= 0.5
+
+
+def test_scale_survives_a_screen_that_raises():
+    class Broken:
+        def logicalDotsPerInch(self):
+            raise RuntimeError('no screen')
+
+    assert dm.layout_scale_factor(Broken()) == 1.0
+
+
+@pytest.mark.parametrize('dpi,expected', [(96, 1.0), (144, 1.5), (192, 2.0)])
+def test_pixel_sizes_scale_with_the_screen(qapp, tmp_path, dpi, expected, monkeypatch):
+    """Config pixel sizes are written for a 96dpi screen and scaled to the real one."""
+    monkeypatch.setattr(dm, 'layout_scale_factor',
+                        lambda screen, reference_dpi=96.0, enabled=True: expected if enabled else 1.0)
+
+    settings = dict(dm.DEFAULT_CONFIG)
+    settings['scale_with_screen_dpi'] = True
+    settings.update(use_backlight_control=False, is_full_screen=False, is_touch=False,
+                    fetch_in_background=False, verbosity=0)
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    settings['css_file'] = os.path.join(root, 'style.css')
+    (tmp_path / dm.CLIENT_NAME_FILENAME).write_text('Me <me@example.com>', encoding='utf-8')
+
+    import yaml
+    path = tmp_path / f'dpi{dpi}.yaml'
+    path.write_text(yaml.safe_dump(settings), encoding='utf-8')
+
+    monitor = build_monitor(qapp, str(path), FakeClient())
+
+    assert monitor.layout_scale == expected
+    assert monitor.width == round(dm.DEFAULT_CONFIG['window_width'] * expected)
+    assert monitor.height == round(dm.DEFAULT_CONFIG['window_height'] * expected)
+    assert monitor.row_height == round(dm.DEFAULT_CONFIG['row_height'] * expected)
+    assert monitor.columns[0].width == round(dm.DEFAULT_CONFIG['columns'][0]['width'] * expected)
+    assert monitor.column_group_spacing == round(dm.DEFAULT_CONFIG['column_group_spacing'] * expected)

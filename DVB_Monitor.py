@@ -39,11 +39,16 @@ DEFAULT_CONFIG = {
     "verbosity": 0,
     "refresh_forever": False,
 
+    # widths are in pixels, and have to fit the window: with num_departures_to_monitor=12 and
+    # num_rows_per_table=6 these are laid out as two groups side by side, so the budget is
+    # (window_width - column_group_spacing) / 2 = (480 - 20) / 2 = 230 per group.  these come to
+    # 228.  each is also wide enough for its own heading at the default stylesheet font, which
+    # is what the startup warnings check.
     "columns": [
-        {"header": "#",    "width": 35,  "getter": "get_line",        "alignment": "center", "margin_right": 0, "elide": False},
-        {"header": "",     "width": 30,  "getter": "get_mode_emoji",  "alignment": "left", "margin_right": 0, "elide": False},
-        {"header": "Mins", "width": 30,  "getter": "get_minutes",     "alignment": "right", "margin_right": 0, "elide": False},
-        {"header": "Dest", "width": 140, "getter": "get_destination", "alignment": "left", "margin_right": 0, "elide": True},
+        {"header": "#",    "width": 32,  "getter": "get_line",        "alignment": "center", "margin_right": 0, "elide": False},
+        {"header": "",     "width": 28,  "getter": "get_mode_emoji",  "alignment": "left", "margin_right": 0, "elide": False},
+        {"header": "min",  "width": 40,  "getter": "get_minutes",     "alignment": "right", "margin_right": 0, "elide": False},
+        {"header": "Dest", "width": 128, "getter": "get_destination", "alignment": "left", "margin_right": 0, "elide": True},
     ],
 
     "column_group_spacing": 20,
@@ -62,6 +67,12 @@ DEFAULT_CONFIG = {
     "use_backlight_control": False,
 
     "css_file": "style.css",
+
+    # pixel sizes in a config are written for a REFERENCE_DPI screen and scaled to whatever you
+    # actually have, so the layout keeps up with the pt font sizes in the stylesheet.
+    # set scale_with_screen_dpi to false to take the numbers literally.
+    "scale_with_screen_dpi": True,
+    "reference_dpi":         96,
 
     # --- network robustness ---
     "request_timeout":          8,     # seconds to wait for the response body.  dvb's own default is 15.
@@ -116,6 +127,109 @@ _warned_modes = set()
 
 
 Column = namedtuple("Column", ["header", "width", "getter", "alignment", "margin_right", "elide"])
+
+# DVB asks every client to identify itself with a name and contact address.  that is personal
+# information, so it does NOT belong in a config file you commit -- keep it in this file instead,
+# which is gitignored.
+CLIENT_NAME_FILENAME = 'dvb_client_name.txt'
+
+
+# Every pixel size in a config file -- window size, row height, column widths -- is written as if
+# the screen were REFERENCE_DPI.  Font sizes in the stylesheets are in pt, which Qt converts to
+# pixels using the screen's DPI, so on a high-DPI screen the text doubles while a hard-coded pixel
+# width does not.  That mismatch is what made rows overflow and destinations get truncated.
+# Scaling the pixel sizes by the same factor keeps the two in proportion at any DPI.
+REFERENCE_DPI = 96.0
+
+
+def layout_scale_factor(screen, reference_dpi=REFERENCE_DPI, enabled=True):
+    """how much to multiply config pixel sizes by, for this screen.  1.0 on an ordinary display."""
+    if not enabled or screen is None:
+        return 1.0
+
+    try:
+        dpi = float(screen.logicalDotsPerInch())
+    except Exception:
+        return 1.0
+
+    if dpi <= 0 or reference_dpi <= 0:
+        return 1.0
+
+    scale = dpi / reference_dpi
+
+    # a screen claiming something absurd shouldn't produce an unusable window
+    return min(max(scale, 0.5), 4.0)
+
+
+def read_client_name_file(path):
+    """the first meaningful line of a client name file, or None if there isn't one."""
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    return line
+    except OSError:
+        return None
+
+    return None
+
+
+def client_name_search_path(config_path):
+    """
+    where to look for dvb_client_name.txt, most specific first: beside the config file being
+    used, then beside this script.  the second is the usual case -- one file in your checkout,
+    shared by every config you keep there.
+    """
+    candidates = []
+
+    config_dir = os.path.dirname(os.path.abspath(config_path)) if config_path else None
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    for directory in (config_dir, script_dir):
+        if directory and directory not in candidates:
+            candidates.append(directory)
+
+    return [os.path.join(directory, CLIENT_NAME_FILENAME) for directory in candidates]
+
+
+def find_client_name(search_path, config_value=None, verbosity=0):
+    """
+    resolve the DVB client name.  a dvb_client_name.txt anywhere on the search path wins;
+    a dvb_client_name entry in the config file is honoured as a fallback, for setups that
+    predate the separate file.  returns None if nothing supplied one.
+    """
+    for path in search_path:
+        name = read_client_name_file(path)
+        if name:
+            if verbosity >= 1:
+                print(f'ℹ️ using the DVB client name from {path}')
+            return name
+
+    if config_value:
+        if verbosity >= 1:
+            print('ℹ️ using the DVB client name from your config file')
+        return config_value
+
+    return None
+
+
+def missing_client_name_message(search_path):
+    preferred = search_path[-1] if search_path else CLIENT_NAME_FILENAME
+
+    return (
+        "no DVB client name found.\n"
+        "\n"
+        "  DVB asks every client to identify itself with a name and contact address.\n"
+        "  It is yours, so it is kept out of the repo rather than in a config file.\n"
+        "\n"
+        "  Create it with:\n"
+        f"      echo 'DVB Monitor - your name <you@example.com>' > {preferred}\n"
+        "\n"
+        f"  ({CLIENT_NAME_FILENAME} is gitignored, so it will not be committed.)\n"
+        "  A dvb_client_name: entry in your config file also still works."
+    )
+
 
 # the border and padding the stylesheet asks of grid cells.  used to work out how tall a row has
 # to be for a given font, so that raising font-size in the css doesn't clip the text.
@@ -654,6 +768,10 @@ class DVB_Monitor(QMainWindow):
         self.refresh_interval_ms = self.refresh_interval * 1000
         self.clear_interval_ms = self.clear_interval * 1000
 
+    def scaled_px(self, value):
+        """a pixel size from the config, in this screen's pixels."""
+        return int(round(value * self.layout_scale))
+
     def setup_dvb_client(self):
         # the core of this display.  use this object to make queries into the DVB api.
         self.client = dvb.Client(user_agent=self.dvb_client_name)
@@ -734,8 +852,6 @@ class DVB_Monitor(QMainWindow):
                       f"got {type(user_config).__name__}")
                 sys.exit(-12039)
 
-            if "dvb_client_name" not in user_config:
-                raise RuntimeError("required entry `dvb_client_name` not found in your `config.yaml` file.  Add it.")
             return user_config
 
         user_config = load_config(path)
@@ -746,10 +862,24 @@ class DVB_Monitor(QMainWindow):
         # then overwrite with the items from the user's yaml file
         config.update(user_config)
 
+        # work out the screen scale before reading any pixel size, so every one of them can be
+        # scaled on the way in and the rest of the app can stay in plain pixels
+        self.verbosity = config["verbosity"]
+        self.scale_with_screen_dpi = bool(config["scale_with_screen_dpi"])
+        self.reference_dpi = float(config["reference_dpi"]) or REFERENCE_DPI
+
+        screen = self.app.primaryScreen() if self.app is not None else None
+        self.layout_scale = layout_scale_factor(screen, self.reference_dpi, self.scale_with_screen_dpi)
+
+        if self.verbosity >= 1 and abs(self.layout_scale - 1.0) > 0.01:
+            dpi = screen.logicalDotsPerInch() if screen else self.reference_dpi
+            print(f'ℹ️ screen reports {dpi:.0f} dpi, so pixel sizes from your config are scaled '
+                  f'by {self.layout_scale:.2f} to keep up with the fonts')
+
         # finally, set the values of internal things from the YAML file.
         # i forbid myself to use `eval`.
         self.stops_to_monitor = config["stops_to_monitor"]
-        self.row_height = config["row_height"]
+        self.row_height = self.scaled_px(config["row_height"])
         self.num_rows_per_table = config["num_rows_per_table"]
         self.num_stops_per_page = config["num_stops_per_page"]
         self.consecutive_autorefresh_timeout_threshold = config["consecutive_autorefresh_timeout_threshold"]
@@ -757,8 +887,8 @@ class DVB_Monitor(QMainWindow):
         self.refresh_interval = config["refresh_interval"]
         self.clear_interval = config["clear_interval"]
 
-        self.width = config["window_width"]
-        self.height = config["window_height"]
+        self.width = self.scaled_px(config["window_width"])
+        self.height = self.scaled_px(config["window_height"])
         self.left = config["window_loc_x"]
         self.top = config["window_loc_y"]
 
@@ -778,21 +908,19 @@ class DVB_Monitor(QMainWindow):
 
             self.columns.append(Column(
                 header      = col["header"],
-                width       = col["width"],
+                width       = self.scaled_px(col["width"]),
                 getter      = GETTER_REGISTRY[getter_name],
                 alignment   = ALIGNMENT_REGISTRY[alignment_name],
-                margin_right= col.get("margin_right", 0),
+                margin_right= self.scaled_px(col.get("margin_right", 0)),
                 elide       = col.get("elide", False),  # default to False
             ))
 
-        self.column_group_spacing = config["column_group_spacing"]
+        self.column_group_spacing = self.scaled_px(config["column_group_spacing"])
 
         self.mock_update = config["mock_update"]
         self.title = config["window_title"]
 
         self.num_departures_to_monitor = config["num_departures_to_monitor"]
-
-        self.verbosity = config["verbosity"]
 
         self.is_full_screen = config["is_full_screen"]
         self.is_touch = config["is_touch"]
@@ -827,9 +955,18 @@ class DVB_Monitor(QMainWindow):
         global UNKNOWN_MODE_EMOJI
         UNKNOWN_MODE_EMOJI = config["unknown_mode_emoji"]
 
-        self.dvb_client_name = config["dvb_client_name"]  # there should be no default for this, because the user is supposed to give contact into in this strong.
+        # deliberately not in DEFAULT_CONFIG: there can be no default for someone's contact
+        # details.  it comes from dvb_client_name.txt, or from the config file for setups that
+        # predate that.
+        self.client_name_search_path = client_name_search_path(path)
+        self.dvb_client_name = find_client_name(
+            self.client_name_search_path,
+            config_value = config.get("dvb_client_name"),
+            verbosity    = self.verbosity,
+        )
+
         if not self.dvb_client_name:
-            raise RuntimeError('dvb_client_name must not be blank')
+            raise RuntimeError(missing_client_name_message(self.client_name_search_path))
 
         if self.mock_update:
             print('ℹ️ `mock_update` is set to true, which is good for development, but bad for actual use.  set to false so it actually updates data')
@@ -839,20 +976,26 @@ class DVB_Monitor(QMainWindow):
         errors = []
         warnings = []
 
-        # compute total column width
+        # compute total column width.  this has to match what StopDisplay._build_grid actually
+        # lays out, gaps included -- it used to leave the gaps out and so passed configs whose
+        # grid was wider than the window.
         col_width_per_group = sum(col.width + col.margin_right for col in self.columns)
         num_cols_needed = math.ceil(self.num_departures_to_monitor / self.num_rows_per_table)
-        total_table_width = col_width_per_group * num_cols_needed
+        total_gap_width = self.column_group_spacing * (num_cols_needed - 1)
+        total_table_width = col_width_per_group * num_cols_needed + total_gap_width
 
         # check table fits in window
         if total_table_width > self.width:
+            gap_note = (f" plus {num_cols_needed - 1} x {self.column_group_spacing}px between groups"
+                        if total_gap_width else "")
             errors.append(
-                f"Table is too wide: {num_cols_needed} column groups x {col_width_per_group}px = "
-                f"{total_table_width}px, but window is only {self.width}px wide.\n"
+                f"Table is too wide: {num_cols_needed} column groups x {col_width_per_group}px"
+                f"{gap_note} = {total_table_width}px, but window is only {self.width}px wide.\n"
                 f"  Possible fixes:\n"
                 f"    - reduce num_departures_to_monitor (currently {self.num_departures_to_monitor})\n"
                 f"    - increase num_rows_per_table (currently {self.num_rows_per_table})\n"
                 f"    - reduce column widths in config\n"
+                f"    - reduce column_group_spacing (currently {self.column_group_spacing})\n"
                 f"    - increase window_width (currently {self.width})"
             )
 
@@ -958,9 +1101,12 @@ class DVB_Monitor(QMainWindow):
         self.shortcut_refresh = QShortcut(QKeySequence(Qt.Key_Up), self)
         self.shortcut_refresh.activated.connect(self.manual_refresh)
 
+        # constructing it with central_widget already installs it there.  calling
+        # self.setLayout() as well made Qt print "Attempting to set QLayout on DVB_Monitor,
+        # which already has a layout" on every start, and did nothing -- a QMainWindow manages
+        # its own layout and the content belongs to the central widget.
         self.main_layout = QVBoxLayout(central_widget)
         self.main_layout.setContentsMargins(0, 0, 0, 0)  # This removes padding around the layout
-        self.setLayout(self.main_layout)
         
         self.init_tables()
         self.setup_bottom()
@@ -1053,6 +1199,12 @@ class DVB_Monitor(QMainWindow):
                   f'{self.height}px.  Fixes: reduce font-size in {self.css_file}, '
                   f'reduce num_rows_per_table (currently {self.num_rows_per_table}), '
                   f'or raise window_height.')
+
+        if table.width() > self.width:
+            print(f'⚠️  the table is {table.width()}px wide but the window is only {self.width}px.  '
+                  f'Fixes: narrow the columns in your config, '
+                  f'reduce column_group_spacing (currently {self.column_group_spacing}), '
+                  f'or raise window_width.')
 
         for header, width, needed in table.narrow_columns():
             print(f'⚠️  column "{header}" is {width}px wide but its heading needs {needed}px at '
@@ -1631,7 +1783,6 @@ class DVB_Monitor(QMainWindow):
 def generate_default_config(path):
     import yaml
 
-    # make a copy without the dvb_client_name so user is forced to add it
     config = copy.deepcopy(DEFAULT_CONFIG)
 
     # add a commented reminder - yaml doesn't support comments via dump,
@@ -1640,8 +1791,9 @@ def generate_default_config(path):
         f.write("# DVB Monitor configuration file\n")
         f.write("# generated by DVB_Monitor.py --generate-config\n")
         f.write("\n")
-        f.write("# REQUIRED: set this to your contact info for the DVB api\n")
-        f.write("dvb_client_name: your_name_or_email_here\n")
+        f.write("# Your DVB client name does NOT go in here -- it is your contact information,\n")
+        f.write(f"# so it lives in {CLIENT_NAME_FILENAME}, which is gitignored.  This file is\n")
+        f.write("# therefore safe to commit and share.\n")
         f.write("\n")
         f.write("# REQUIRED: set this to your stop name(s)\n")
         f.write("# stops_to_monitor:\n")
@@ -1652,7 +1804,11 @@ def generate_default_config(path):
         yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
 
     print(f"✅ default config written to {path}")
-    print(f"⚠️  edit '{path}' and set dvb_client_name before running")
+    print(f"ℹ️  edit '{path}' and set stops_to_monitor")
+
+    if not find_client_name(client_name_search_path(path)):
+        print()
+        print(f"⚠️  {missing_client_name_message(client_name_search_path(path))}")
 
 
 if __name__ == '__main__':
