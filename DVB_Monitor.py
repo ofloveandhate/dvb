@@ -36,6 +36,10 @@ DEFAULT_CONFIG = {
     "mock_update": False,
     "window_title": "DVB Local Stop Monitor",
     "num_departures_to_monitor":12,
+
+    # a departure the API gives no real time for gets an infinite number of minutes, which sorts
+    # it to the bottom of the table and shows as "inf".  set this false to leave those out.
+    "show_infinite_arrivals": True,
     "verbosity": 0,
     "refresh_forever": False,
 
@@ -936,6 +940,8 @@ class DVB_Monitor(QMainWindow):
 
         self.num_departures_to_monitor = config["num_departures_to_monitor"]
 
+        self.show_infinite_arrivals = bool(config["show_infinite_arrivals"])
+
         self.is_full_screen = config["is_full_screen"]
         self.is_touch = config["is_touch"]
         self.touch_rotation = config["touch_rotation"]
@@ -1742,6 +1748,9 @@ class DVB_Monitor(QMainWindow):
 
         # .get, because a stop that has never fetched successfully simply isn't in here
         departures = self.departures.get(stop_name) or []
+
+        if not self.show_infinite_arrivals:
+            departures = [d for d in departures if np.isfinite(get_minutes(d))]
 
         num_cols_per_group = len(self.columns)
 
