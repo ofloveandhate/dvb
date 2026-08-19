@@ -1,0 +1,114 @@
+/*
+ * =====================================================================
+ * DVB Monitor - showcase stylesheet
+ * =====================================================================
+ *
+ * A departure-board look: near-black, amber stop names, quiet grid lines.
+ * Pair it with config_showcase.yaml.
+ *
+ * This is Qt's stylesheet language (QSS).  It reads like CSS but has no
+ * variables, so the palette is written out in full every time.  The
+ * colours in use, if you want to reskin the whole thing:
+ *
+ *     #0c0f14   background, near black
+ *     #141a22   the heading strip above the departures
+ *     #202836   grid lines
+ *     #e8eef7   departure text
+ *     #f5b942   amber, for the stop names
+ *     #7c8798   muted, for the timestamp
+ *
+ * A thing worth knowing before you go far: every departure cell shares
+ * one style class, so you cannot make the minutes column bold and the
+ * destination column plain.  Column-by-column styling is not something
+ * the app can do yet.  What you *can* change per column, in the yaml,
+ * is width and alignment.
+ * =====================================================================
+ */
+
+
+/* ============================================================
+ * THE KNOBS
+ * ============================================================ */
+
+/* the departures themselves */
+QLabel[class="grid_cell"] {
+    font-family: "DejaVu Sans", "Noto Sans", sans-serif;
+    font-size: 15pt;
+    color: #e8eef7;
+    background-color: #0c0f14;
+    border: none;
+    border-bottom: 1px solid #202836;
+    padding-left: 6px;
+    padding-right: 6px;
+}
+
+/* the Line / Destination / min headings */
+QLabel[class="grid_header"] {
+    font-family: "DejaVu Sans", "Noto Sans", sans-serif;
+    font-size: 9pt;
+    font-weight: bold;
+    color: #7c8798;
+    background-color: #141a22;
+    border: none;
+    border-bottom: 2px solid #f5b942;
+    padding-left: 6px;
+    padding-right: 6px;
+}
+
+/* the stop name above each block */
+QLabel[class="haltestelle_header"] {
+    font-family: "DejaVu Sans", "Noto Sans", sans-serif;
+    font-size: 17pt;
+    font-weight: bold;
+    color: #f5b942;
+    padding-bottom: 4px;
+}
+
+/* the timestamp along the bottom */
+QLabel[class="footer"] {
+    font-size: 8pt;
+    color: #7c8798;
+    padding-top: 2px;
+    padding-bottom: 2px;
+}
+
+
+/* ============================================================
+ * EVERYTHING ELSE
+ * ============================================================ */
+
+QMainWindow, QWidget {
+    background-color: #0c0f14;
+}
+
+/* the prev/next buttons carry stop names, the middle one just refreshes */
+QPushButton {
+    font-family: "DejaVu Sans", "Noto Sans", sans-serif;
+    font-size: 11pt;
+    color: #e8eef7;
+    background-color: #141a22;
+    border: 1px solid #202836;
+    border-radius: 4px;
+    padding: 7px;
+}
+
+QPushButton:pressed {
+    background-color: #202836;
+    border: 1px solid #f5b942;
+}
+
+/* showing the last departures we managed to fetch, after a failure */
+QLabel[class="haltestelle_header_stale"] {
+    font-size: 17pt;
+    font-weight: bold;
+    color: #c98a2e;
+    padding-bottom: 4px;
+}
+
+/* the fetch failed and there is nothing left to show */
+QLabel[class="haltestelle_header_error"] {
+    font-size: 17pt;
+    font-weight: bold;
+    color: #e06c75;
+    padding-bottom: 4px;
+}

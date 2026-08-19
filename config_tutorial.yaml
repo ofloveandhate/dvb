@@ -1,0 +1,194 @@
+# =====================================================================
+# DVB Monitor - a config file with the reasoning left in
+# =====================================================================
+#
+# This is a working config, and also a walk through what the settings do.
+# Copy it, change things, watch what happens:
+#
+#     cp config_tutorial.yaml myconfig.yaml
+#     python DVB_Monitor.py --config myconfig.yaml
+#
+# Add --fake-client ok to try things without touching the network:
+#
+#     python DVB_Monitor.py --config myconfig.yaml --fake-client ok
+#
+# There are seven numbered experiments below.  Each one is a single edit.
+# See config_showcase.yaml for the same features without the commentary.
+# =====================================================================
+
+
+# ---------------------------------------------------------------------
+# 1. WHICH STOPS
+#
+# Names as DVB knows them.  If a name is not found the app says so and
+# keeps going, so a typo costs you one stop and not the whole board.
+#
+# TRY: add a fourth stop.  The page count follows automatically.
+# ---------------------------------------------------------------------
+stops_to_monitor:
+  - Altmarkt
+  - Postplatz
+  - Pirnaischerplatz
+
+
+# ---------------------------------------------------------------------
+# 2. PAGES
+#
+# How many stops share the screen at once.  Fewer stops per page than you
+# monitor means there is more than one page, and prev/next buttons appear
+# at the bottom.  Page with them, with the left and right arrow keys, or
+# by tapping on a touchscreen.  Pages do not turn on their own.
+#
+# TRY: set this to 3.  All three stops fit on one page and the nav
+#      buttons disappear, because there is nowhere else to go.
+# ---------------------------------------------------------------------
+num_stops_per_page: 1
+
+
+# ---------------------------------------------------------------------
+# 3. HOW MANY DEPARTURES
+#
+# num_rows_per_table is how tall one block of departures is.  Ask for
+# more departures than fit and the app starts a second block beside the
+# first rather than making the rows smaller.
+#
+# TRY: num_departures_to_monitor: 16 with num_rows_per_table still 8.
+#      Two blocks of eight appear side by side.  Widen window_width to
+#      about 800 to make room, or the app will tell you it does not fit.
+# ---------------------------------------------------------------------
+num_rows_per_table: 8
+num_departures_to_monitor: 8
+
+# the gap between those side-by-side blocks
+column_group_spacing: 24
+
+# a minimum, not a fixed size: rows grow if the stylesheet asks for a
+# font too tall to fit in them
+row_height: 32
+
+
+# ---------------------------------------------------------------------
+# 4. THE WINDOW
+#
+# Pixels, as if the screen were 96 dpi.  On a higher-resolution screen
+# everything here is scaled up to match, so the board keeps its
+# proportions instead of the text outgrowing the columns.
+#
+# TRY: scale_with_screen_dpi: false to take these numbers literally.
+# ---------------------------------------------------------------------
+# 500 is wider than the three columns below need, on purpose: it leaves room
+# for the two commented-out columns in section 7 without another edit.
+window_width: 500
+window_height: 430
+window_loc_x: 0
+window_loc_y: 0
+
+window_title: "DVB Departures"
+css_file: "style_tutorial.css"
+
+
+# ---------------------------------------------------------------------
+# 5. TIMING
+#
+# Every duration in this file is in seconds.
+#
+# The board stops refreshing by itself after
+# consecutive_autorefresh_timeout_threshold goes by without anyone
+# touching it, then clears what it is showing clear_interval later, so
+# it is not displaying departures that left an hour ago.  Press refresh,
+# or touch the screen, to start it again.
+#
+# TRY: refresh_forever: true to keep it updating all day.
+# ---------------------------------------------------------------------
+refresh_interval: 60
+clear_interval: 300
+consecutive_autorefresh_timeout_threshold: 20
+refresh_forever: false
+
+
+# ---------------------------------------------------------------------
+# 6. WHAT TO LEAVE OUT
+#
+# DVB does not give a real time for every departure.  Those get an
+# infinite number of minutes, sort to the bottom, and show as "inf".
+#
+# TRY: false, and they disappear.  Nothing that has a time moves.
+# ---------------------------------------------------------------------
+show_infinite_arrivals: true
+
+
+# ---------------------------------------------------------------------
+# 7. THE COLUMNS
+#
+# Each entry is one column, left to right:
+#
+#   header     the text above it.  "" for none
+#   width      pixels.  the app warns on startup if a heading will not fit
+#   getter     which piece of the departure to show, from the list below
+#   alignment  left, right or center
+#   elide      optional.  true shortens long text with an ellipsis
+#
+# The getters available:
+#
+#   get_line             the line number
+#   get_destination      where it is heading
+#   get_minutes          minutes until it leaves
+#   get_mode_emoji       tram, bus, ferry... as one glyph
+#   get_direction_arrow  which way it leaves this stop
+#   get_line_w_mode      the line number and its glyph together
+#
+# TRY: uncomment the two blocks below.  The emoji column costs nothing.
+#      The arrow column makes the app work out which way each service
+#      goes, which takes one extra API call per route the first time it
+#      sees it, and nothing after that.  Leave it commented out and no
+#      such calls happen at all.
+#
+#      Widths: 50 + 240 + 60 = 350 as it stands, or 430 with both of the
+#      commented columns, either of which fits window_width above.
+# ---------------------------------------------------------------------
+columns:
+  - header: "Line"
+    width: 50
+    getter: get_line
+    alignment: center
+
+  # - header: ""
+  #   width: 44
+  #   getter: get_mode_emoji
+  #   alignment: center
+
+  # - header: ""
+  #   width: 36
+  #   getter: get_direction_arrow
+  #   alignment: center
+
+  - header: "Destination"
+    width: 240
+    getter: get_destination
+    alignment: left
+    elide: true
+
+  - header: "min"
+    width: 60
+    getter: get_minutes
+    alignment: right
+
+
+# ---------------------------------------------------------------------
+# The rest, which you can mostly leave alone
+# ---------------------------------------------------------------------
+
+# how long an arrow is trusted before being worked out again, in seconds.
+# routes change when the night schedule starts.  0 never recomputes.
+direction_recompute_interval: 3600
+# the most arrow lookups any one refresh may make, so a cold start
+# trickles in rather than firing everything at once
+direction_lookups_per_refresh: 4
+
+# room around the buttons along the bottom
+button_margin: 10
+button_spacing: 8
+refresh_button_width: 64
+
+# 0 is quiet, 1 explains what it is doing, 2 adds tracebacks
+verbosity: 1
