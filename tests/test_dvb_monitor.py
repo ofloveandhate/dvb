@@ -889,6 +889,23 @@ def test_the_client_name_file_is_gitignored():
     assert dm.CLIENT_NAME_FILENAME in ignored
 
 
+def test_backups_of_the_client_name_file_are_gitignored():
+    """
+    Editors and hand-made backups leave dvb_client_name.txt.bak / .save / ~ next to the real
+    one.  An exact-filename ignore leaves those staged by `git add -A`, which leaks exactly the
+    contact details this whole arrangement exists to keep out of the repo.
+    """
+    import subprocess
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    for suffix in ('.bak', '.save', '~', '.orig'):
+        candidate = dm.CLIENT_NAME_FILENAME + suffix
+        result = subprocess.run(['git', 'check-ignore', '-q', candidate],
+                                cwd=root, capture_output=True)
+        assert result.returncode == 0, f'{candidate} is not gitignored'
+
+
 # --------------------------------------------------------------------------------------
 # the shipped defaults and configs must fit their own windows
 # --------------------------------------------------------------------------------------

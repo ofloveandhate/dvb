@@ -3,4 +3,6 @@ __pycache__/
 .pytest_cache/
 
 # your DVB contact details.  personal, and deliberately not committed.
-dvb_client_name.txt
+# the glob covers the backups and scratch copies that accumulate next to it -- an exact
+# filename match would leave dvb_client_name.txt.bak and friends staged by `git add -A`.
+dvb_client_name.txt*
