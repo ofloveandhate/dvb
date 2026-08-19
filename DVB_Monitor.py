@@ -117,6 +117,12 @@ _warned_modes = set()
 
 Column = namedtuple("Column", ["header", "width", "getter", "alignment", "margin_right", "elide"])
 
+# the border and padding the stylesheet asks of grid cells.  used to work out how tall a row has
+# to be for a given font, so that raising font-size in the css doesn't clip the text.
+# keep these in step with the `border` and `padding` in style.css.
+CELL_BORDER  = 1
+CELL_PADDING = 2
+
 def get_line(departure):
     return getattr(departure, 'line', '?')
 
@@ -398,9 +404,11 @@ class StopDisplay(QWidget):
         self.columns              = columns
         self.num_rows             = num_rows
         self.num_cols_needed      = num_cols_needed
-        self.row_height           = row_height
+        self.row_height           = row_height   # a minimum; the font may need more
         self.column_group_spacing = column_group_spacing
         self.labels               = {}
+        self.sized_widgets        = []   # (widget, width) for everything on the fixed grid
+        self.effective_row_height = row_height
 
         self.grid = QGridLayout()
         self.grid.setSpacing(0)
@@ -412,7 +420,6 @@ class StopDisplay(QWidget):
         self._build_grid()
 
     def _build_grid(self):
-        num_cols_per_group = len(self.columns)
         total_w = sum(col.width + col.margin_right for col in self.columns) * self.num_cols_needed
         total_w += self.column_group_spacing * (self.num_cols_needed - 1)
         self.setFixedWidth(total_w)
@@ -425,18 +432,20 @@ class StopDisplay(QWidget):
                 # header
                 header = ElidedLabel(col.header) if col.elide else QLabel(col.header)
                 header.setAlignment(Qt.AlignCenter)
-                header.setFixedSize(col.width, self.row_height)
+                header.setFixedWidth(col.width)
                 header.setProperty('class', 'grid_header')
                 self.grid.addWidget(header, 0, grid_col)
+                self.sized_widgets.append((header, col.width))
 
                 # data rows
                 for row in range(self.num_rows):
                     label = ElidedLabel('?') if col.elide else QLabel('?')
                     label.setAlignment(col.alignment)
-                    label.setFixedSize(col.width, self.row_height)
+                    label.setFixedWidth(col.width)
                     label.setProperty('class', 'grid_cell')
                     self.grid.addWidget(label, row + 1, grid_col)
                     self.labels[(row, grid_col)] = label
+                    self.sized_widgets.append((label, col.width))
 
                 grid_col += 1
 
@@ -445,9 +454,61 @@ class StopDisplay(QWidget):
             if not is_last_group and self.column_group_spacing > 0:
                 for row in range(self.num_rows + 1):  # +1 for header
                     spacer = QWidget()
-                    spacer.setFixedSize(self.column_group_spacing, self.row_height)
+                    spacer.setFixedWidth(self.column_group_spacing)
                     self.grid.addWidget(spacer, row, grid_col)
+                    self.sized_widgets.append((spacer, self.column_group_spacing))
                 grid_col += 1
+
+        self.apply_row_height()
+
+    def apply_row_height(self):
+        """
+        size the rows to the stylesheet's font.
+
+        `row_height` from config.yaml is a MINIMUM, not a cap.  bumping font-size in the css
+        used to just guillotine the text, because every cell was pinned to row_height and the
+        text is drawn bottom-aligned.  now the rows grow to fit whatever the font needs.
+        """
+        tallest_text = 0
+
+        for widget, _ in self.sized_widgets:
+            if not isinstance(widget, QLabel):
+                continue
+            # the stylesheet is applied at polish time, so the font isn't final until then
+            widget.ensurePolished()
+            tallest_text = max(tallest_text, QFontMetrics(widget.font()).height())
+
+        # room for the 1px border and 2px padding the stylesheet asks for, top and bottom
+        self.effective_row_height = max(self.row_height, tallest_text + 2 * (CELL_BORDER + CELL_PADDING))
+
+        for widget, width in self.sized_widgets:
+            widget.setFixedSize(width, self.effective_row_height)
+
+    def total_height(self):
+        """actual pixel height of the grid, once the font has had its say."""
+        return self.effective_row_height * (self.num_rows + 1)   # +1 for the header row
+
+    def narrow_columns(self):
+        """
+        columns whose header no longer fits the stylesheet's font.
+
+        column widths come from config.yaml and cannot safely grow on their own -- the window
+        width is fixed and already validated -- so the app reports them instead of silently
+        chopping characters off.
+        """
+        too_narrow = []
+
+        for col in self.columns:
+            if not col.header:
+                continue
+            probe = self.labels.get((0, 0))
+            if probe is None:
+                break
+            needed = QFontMetrics(probe.font()).horizontalAdvance(col.header) + 2 * (CELL_BORDER + CELL_PADDING)
+            if needed > col.width:
+                too_narrow.append((col.header, col.width, needed))
+
+        return too_narrow
 
     def set_cell(self, row, col, text):
         if (row, col) in self.labels:
@@ -465,16 +526,51 @@ class StopDisplay(QWidget):
             w.style().polish(w)
 
 
-# lets us truncate certain columns
 class ElidedLabel(QLabel):
-    def __init__(self, text='', parent=None):
-        super().__init__(text, parent)
+    """
+    a QLabel that shortens its text with an ellipsis when it doesn't fit.
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        metrics = QFontMetrics(self.font())
-        elided = metrics.elidedText(self.text(), Qt.ElideRight, self.width())
-        painter.drawText(self.rect(), self.alignment(), elided)
+    this works by handing QLabel an already-shortened string, rather than by taking over
+    paintEvent.  an earlier version painted the text itself, which meant the stylesheet's
+    background and border were never drawn -- elided columns came out transparent while every
+    other column picked up the css.  letting QLabel do all the painting avoids that entirely.
+    """
+
+    def __init__(self, text='', parent=None):
+        super().__init__(parent)
+        self._full_text = text
+        self._eliding   = False
+        self._apply_elision()
+
+    def setText(self, text):
+        self._full_text = text
+        self._apply_elision()
+
+    def text(self):
+        """the text as set, not the shortened version actually on screen."""
+        return self._full_text
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_elision()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        # the stylesheet sets the font at polish time, which changes how much fits
+        if event.type() == QEvent.FontChange:
+            self._apply_elision()
+
+    def _apply_elision(self):
+        if self._eliding:
+            return   # super().setText below can re-enter via changeEvent
+
+        self._eliding = True
+        try:
+            width  = self.contentsRect().width() or self.width()
+            elided = QFontMetrics(self.font()).elidedText(self._full_text, Qt.ElideRight, width)
+            super().setText(elided)
+        finally:
+            self._eliding = False
 
 
 
@@ -936,6 +1032,32 @@ class DVB_Monitor(QMainWindow):
             self.tables_layout.addLayout(this_layout)
 
         self.main_layout.addLayout(self.tables_layout)
+
+        self._warn_if_layout_overflows()
+
+    def _warn_if_layout_overflows(self):
+        """
+        validate_config runs before the stylesheet is loaded, so it can only guess at sizes from
+        row_height.  now that the grid is built and the font is known, check for real.
+        """
+        table = self.tables.get(0)
+        if table is None:
+            return
+
+        if table.effective_row_height > self.row_height:
+            print(f'ℹ️ the stylesheet font needs {table.effective_row_height}px rows, more than '
+                  f'row_height={self.row_height}; rows were grown to fit')
+
+        if table.total_height() > self.height:
+            print(f'⚠️  the table is {table.total_height()}px tall but the window is only '
+                  f'{self.height}px.  Fixes: reduce font-size in {self.css_file}, '
+                  f'reduce num_rows_per_table (currently {self.num_rows_per_table}), '
+                  f'or raise window_height.')
+
+        for header, width, needed in table.narrow_columns():
+            print(f'⚠️  column "{header}" is {width}px wide but its heading needs {needed}px at '
+                  f'the current font; text will be cut off.  Widen it in your config, '
+                  f'or reduce font-size in {self.css_file}.')
 
 
 

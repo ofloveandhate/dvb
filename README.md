@@ -61,6 +61,39 @@ Relevant `config.yaml` settings, all optional:
 | `error_placeholder` | `—` | drawn in a cell whose value could not be computed |
 | `unknown_mode_emoji` | `` | drawn for a mode of transit with no emoji |
 
+## Changing how it looks
+
+`style.css` is the default; `style_pitft.css` is tuned for the 480x320 Adafruit PiTFT. Point at
+one with `css_file:` in your config.
+
+It is Qt's stylesheet language (QSS), which looks like CSS but has no variables, so colours are
+written out in full each time. Each file opens with the four rules worth changing first --
+departure rows, column headings, the stop name, and the timestamp -- and everything after that is
+chrome.
+
+Rows grow to fit whatever `font-size` you set, so making the departure text bigger just works;
+`row_height` in your config is treated as a minimum rather than a fixed size. Column *widths* are
+a different matter: they come from the `columns:` section of your config and cannot grow on their
+own, because the window width is fixed. If the text outgrows them, the app says so on startup:
+
+```
+⚠️  column "Dest" is 90px wide but its heading needs 140px at the current font; text will be cut
+    off.  Widen it in your config, or reduce font-size in style.css.
+⚠️  the table is 512px tall but the window is only 400px.  Fixes: reduce font-size in style.css,
+    reduce num_rows_per_table (currently 12), or raise window_height.
+```
+
+Only these style classes exist; anything else in a stylesheet is ignored:
+
+| class | what it is |
+| --- | --- |
+| `grid_cell` | the departure rows |
+| `grid_header` | the `#` / `Dest` / `t` headings |
+| `haltestelle_header` | the stop name |
+| `haltestelle_header_stale` | stop name, showing old data after a failed fetch |
+| `haltestelle_header_error` | stop name, failed with nothing left to show |
+| `footer` | the timestamp line |
+
 ## Development
 
 `--fake-client {ok,fail,mixed,empty,slow}` runs the whole UI against a fake API, with no network
