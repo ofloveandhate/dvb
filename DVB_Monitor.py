@@ -25,7 +25,11 @@ import threading
 import traceback
 
 
-import RPi.GPIO as GPIO
+# RPi.GPIO only exists on a Raspberry Pi, and is only needed to switch the backlight, so it is
+# imported by setup_backlight when use_backlight_control is on rather than here.  with it off
+# the app runs on any machine, and with it on a missing package is a clear message instead of
+# a traceback on import.
+GPIO = None
 BACKLIGHT_PIN = 18
 
 DEFAULT_CONFIG = {
@@ -971,9 +975,25 @@ class DVB_Monitor(QMainWindow):
         print(f"Screen size:     {screen.width()}x{screen.height()}")
     
     def setup_backlight(self):
-        if self.use_backlight_control:
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setup(BACKLIGHT_PIN, GPIO.OUT, initial=GPIO.HIGH)
+        if not self.use_backlight_control:
+            return
+
+        global GPIO
+        try:
+            import RPi.GPIO as gpio_module
+        except (ImportError, RuntimeError) as e:
+            # RuntimeError because RPi.GPIO raises that, rather than ImportError, when the
+            # machine is not a Raspberry Pi
+            raise RuntimeError(
+                f'use_backlight_control is on, but RPi.GPIO could not be loaded '
+                f'({type(e).__name__}: {e}).\n'
+                f'  On a Pi, install it into this environment:  pip install RPi.GPIO\n'
+                f'  Anywhere else, set use_backlight_control: false in your config.'
+            ) from e
+
+        GPIO = gpio_module
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(BACKLIGHT_PIN, GPIO.OUT, initial=GPIO.HIGH)
 
     def _shutdown_hardware(self):
         """
