@@ -63,6 +63,8 @@ DEFAULT_CONFIG = {
     # departures are drawn before the lookups start, so a high number does not delay them.
     "direction_lookups_per_refresh": 40,
     "verbosity": 0,
+    # true: refresh automatically for good (never stop after consecutive_autorefresh_timeout_threshold,
+    # never clear the stale data), and drop the refresh button from the bottom row since it has no use.
     "refresh_forever": False,
 
     # where the text sits vertically in each cell of the departure table: top, center or bottom.
@@ -1670,12 +1672,15 @@ class DVB_Monitor(QMainWindow):
             self.buttons['next'] = QPushButton()
             self.buttons['next'].clicked.connect(lambda x: self.change_page(+1))
 
-        self.buttons['refresh'] = QPushButton("🥀")
-        self.buttons['refresh'].clicked.connect(self.manual_refresh)
+        # with refresh_forever the screen refreshes itself for good, so there is nothing for a
+        # refresh button to do and it is left out altogether
+        if not self.refresh_forever:
+            self.buttons['refresh'] = QPushButton("🥀")
+            self.buttons['refresh'].clicked.connect(self.manual_refresh)
 
-        # never narrower than the glyph needs, whatever the config or the stylesheet say
-        self.buttons['refresh'].setFixedWidth(
-            max(self.refresh_button_width, self.buttons['refresh'].sizeHint().width()))
+            # never narrower than the glyph needs, whatever the config or the stylesheet say
+            self.buttons['refresh'].setFixedWidth(
+                max(self.refresh_button_width, self.buttons['refresh'].sizeHint().width()))
 
         # stretch of 1 on the nav buttons, 0 on refresh: the stop names get the room, the glyph
         # does not.  where a nav button is absent, an empty stretch takes its place so that the
@@ -1685,7 +1690,8 @@ class DVB_Monitor(QMainWindow):
         else:
             self.bottom_layout.addStretch(1)
 
-        self.bottom_layout.addWidget(self.buttons['refresh'], 0)
+        if 'refresh' in self.buttons:
+            self.bottom_layout.addWidget(self.buttons['refresh'], 0)
 
         if self.is_nav_needed_next:
             self.bottom_layout.addWidget(self.buttons['next'], 1)
