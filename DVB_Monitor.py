@@ -20,7 +20,13 @@ import copy
 import math
 import time
 import signal
+import struct
+import threading
 import traceback
+
+
+import RPi.GPIO as GPIO
+BACKLIGHT_PIN = 18
 
 DEFAULT_CONFIG = {
     "stops_to_monitor": ["Altmarkt"],
@@ -46,7 +52,12 @@ DEFAULT_CONFIG = {
     # call, but only the first time for each route at each stop -- every upcoming departure of
     # that route reuses it.  seconds, like every other duration here; 0 means never recompute.
     "direction_recompute_interval":  3600,
-    "direction_lookups_per_refresh": 4,
+    # the most lookups one refresh may make, shared across all your stops.  the first refresh
+    # after starting has to look up every route, so this needs to be big enough to cover them
+    # all or the arrows trickle in a few at a time, one refresh after another.  after that the
+    # cache answers nearly everything and the real number of calls drops to almost nothing.
+    # departures are drawn before the lookups start, so a high number does not delay them.
+    "direction_lookups_per_refresh": 40,
     "verbosity": 0,
     "refresh_forever": False,
 
@@ -77,15 +88,19 @@ DEFAULT_CONFIG = {
 
     "is_full_screen": False,
     "is_touch": False,
-    "touch_rotation": 270,
-    "is_touch_calibrated": False,
-    "touch_raw_x_min": 46,
-    "touch_raw_x_max": 434,
-    "touch_raw_y_min": 22,
-    "touch_raw_y_max": 287,
 
-    "backlight_path":        "/sys/class/backlight/soc:backlight/brightness",
-    "backlight_max":         1,    # ADD THIS so it's configurable
+    # the touchscreen's evdev node, read directly.  `ls /dev/input/` and `sudo evtest` find it.
+    "touch_device": "/dev/input/event0",
+
+    # the raw min/max the ADS7846 controller reports at the screen edges, measured on a joy-it
+    # RB-TFT3.5.  tap the four corners under `sudo evtest /dev/input/event0` to measure your own.
+    "touch_raw_x_min": 345,
+    "touch_raw_x_max": 3716,
+    "touch_raw_y_min": 402,
+    "touch_raw_y_max": 3717,
+
+    # the joy-it display's backlight is switched by GPIO 18 (BACKLIGHT_PIN, above), not by a
+    # sysfs backlight device.
     "use_backlight_control": False,
 
     "css_file": "style.css",
@@ -490,90 +505,129 @@ from PyQt5.QtCore import QObject, QEvent, Qt
 from PyQt5.QtGui import QMouseEvent, QCursor
 from PyQt5.QtCore import QObject, QEvent, QPoint, Qt
 
-def transform_coords(x, y, rotation, w, h):
-    if rotation == 90:
-        return y, w - x
-    elif rotation == 180:
-        return w - x, h - y
-    elif rotation == 270:
-        return h - y, x
-    else:
-        return x, y
+class TouchReader(QObject):
+    """
+    reads touches straight from the kernel's evdev node on a background thread, and posts them
+    into Qt as ordinary mouse events.
 
-def transform_coords_calibrated(x, y, w, h, x_min, x_max, y_min, y_max):
-    nx = (x - x_min) / (x_max - x_min)
-    ny = (y - y_min) / (y_max - y_min)
-    screen_x = int((1.0 - ny) * w)
-    screen_y = int(nx * h)
-    return screen_x, screen_y
+    this exists because Qt's linuxfb platform grabs the touchscreen through libinput and then
+    never delivers anything to the widgets on this display.  reading /dev/input/eventN ourselves
+    sidesteps that entirely.  the raw ADS7846 coordinates are mapped onto the screen using the
+    touch_raw_* numbers from the config, for the joy-it RB-TFT3.5 mounted the way it comes.
+    """
 
+    # signals are what carry data safely from the reader thread into the gui thread
+    _touch_signal = pyqtSignal(int, int, bool)   # screen x, screen y, finger down
 
-class TouchFilter(QObject):
-    def __init__(self, app, ROTATION, SCREEN_W, SCREEN_H,
-                 is_calibrated=False,
-                 x_min=0, x_max=1, y_min=0, y_max=1):
+    def __init__(self, app, device, screen_w, screen_h,
+                 x_min, x_max, y_min, y_max, wake_callback=None):
         super().__init__()
         self.app           = app
-        self.ROTATION      = ROTATION
-        self.SCREEN_W      = SCREEN_W
-        self.SCREEN_H      = SCREEN_H
-        self.processing    = False
-        self.is_calibrated = is_calibrated
+        self.device        = device
+        self.screen_w      = screen_w
+        self.screen_h      = screen_h
         self.x_min         = x_min
         self.x_max         = x_max
         self.y_min         = y_min
         self.y_max         = y_max
-        self.wake_callback = None  # set this to backlight_on function
+        self.wake_callback = wake_callback
+        self.running       = True
 
-    def _transform(self, x, y):
-        if self.is_calibrated:
-            return transform_coords_calibrated(
-                x, y,
-                self.SCREEN_W, self.SCREEN_H,
-                self.x_min, self.x_max,
-                self.y_min, self.y_max,
+        # gui-thread state, so that one touch is one press and one release however many samples
+        # the controller reports in between
+        self._down         = False
+        self._swallow      = False   # this touch only woke the screen, so it is not delivered
+        self._press_target = None
+
+        self._touch_signal.connect(self._handle_touch)
+
+        self._thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._thread.start()
+
+    def _to_screen(self, raw_x, raw_y):
+        """raw controller coordinates to screen pixels, clamped to the screen."""
+        nx = (raw_x - self.x_min) / max(self.x_max - self.x_min, 1)
+        ny = (raw_y - self.y_min) / max(self.y_max - self.y_min, 1)
+
+        screen_x = int(nx * self.screen_w)
+        screen_y = int((1.0 - ny) * self.screen_h)
+
+        return (max(0, min(self.screen_w - 1, screen_x)),
+                max(0, min(self.screen_h - 1, screen_y)))
+
+    def _read_loop(self):
+        # struct input_event: timeval (two longs), then u16 type, u16 code, s32 value
+        fmt        = 'llHHi'
+        event_size = struct.calcsize(fmt)
+        raw_x      = 0
+        raw_y      = 0
+        pressed    = False
+
+        try:
+            with open(self.device, 'rb') as f:
+                while self.running:
+                    data = f.read(event_size)
+                    if len(data) < event_size:
+                        if not data:   # end of file: the device has gone away
+                            print('⚠️ touch device closed')
+                            break
+                        continue
+
+                    _, _, etype, ecode, evalue = struct.unpack(fmt, data)
+
+                    if etype == 3:                       # EV_ABS
+                        if ecode == 0:                   #   ABS_X
+                            raw_x = evalue
+                        elif ecode == 1:                 #   ABS_Y
+                            raw_y = evalue
+                    elif etype == 1 and ecode == 330:    # EV_KEY, BTN_TOUCH
+                        pressed = (evalue == 1)
+                    elif etype == 0 and ecode == 0:      # EV_SYN, SYN_REPORT: one full sample
+                        x, y = self._to_screen(raw_x, raw_y)
+                        self._touch_signal.emit(x, y, pressed)
+        except Exception as e:
+            print(f'⚠️ touch reader stopped: {type(e).__name__}: {e}')
+
+    def _handle_touch(self, x, y, pressed):
+        """runs on the gui thread."""
+        if pressed and not self._down:
+            self._down    = True
+            self._swallow = bool(self.wake_callback and self.wake_callback())
+            if self._swallow:
+                return   # that tap was only to wake the screen
+
+            target = self.app.widgetAt(x, y)
+            self._press_target = target
+            if target is not None:
+                self._send(target, QEvent.MouseButtonPress, x, y, Qt.LeftButton)
+
+        elif not pressed and self._down:
+            self._down = False
+
+            if self._swallow:
+                self._swallow = False
+                return
+
+            target, self._press_target = self._press_target, None
+            if target is not None:
+                self._send(target, QEvent.MouseButtonRelease, x, y, Qt.NoButton)
+
+    def _send(self, target, event_type, x, y, buttons):
+        try:
+            event = QMouseEvent(
+                event_type,
+                target.mapFromGlobal(QPoint(x, y)),
+                QPoint(x, y),
+                Qt.LeftButton,
+                buttons,
+                Qt.NoModifier,
             )
-        else:
-            return transform_coords(x, y, self.ROTATION, self.SCREEN_W, self.SCREEN_H)
+            self.app.sendEvent(target, event)
+        except RuntimeError:
+            pass   # the widget was deleted between press and release
 
-    def eventFilter(self, obj, event):
-        if self.processing:
-            return False
-
-        if event.type() in (
-            QEvent.MouseButtonPress,
-            QEvent.MouseButtonRelease,
-            QEvent.MouseMove,
-        ):
-            # if screen is off, any touch just wakes it up and blocks the event
-            if self.wake_callback and self.wake_callback():
-                return True  # block the event, just wake
-
-            raw_x = event.globalPos().x()
-            raw_y = event.globalPos().y()
-            new_x, new_y = self._transform(raw_x, raw_y)
-
-            target = self.app.widgetAt(new_x, new_y)
-            if target is None:
-                return True
-
-            local_pos = target.mapFromGlobal(QPoint(new_x, new_y))
-
-            new_event = QMouseEvent(
-                event.type(),
-                local_pos,
-                QPoint(new_x, new_y),
-                event.button(),
-                event.buttons(),
-                event.modifiers(),
-            )
-
-            self.processing = True
-            self.app.sendEvent(target, new_event)
-            self.processing = False
-            return True
-
-        return False
+    def stop(self):
+        self.running = False
 
 
 def resolve_direction_arrows(client, stop_id, stop_coords, departures,
@@ -690,13 +744,23 @@ class DepartureFetcher(QThread):
                                                want_coords=self.direction_budget > 0)
 
             if result.error is None and self.direction_budget > 0:
+                # first pass: cached arrows only (budget 0 makes no api calls), so the
+                # departures and every arrow we already know are on screen straight away
+                known, _ = resolve_direction_arrows(
+                    self.client, result.stop_id, result.stop_coords, result.departures,
+                    0, self.direction_recompute_interval, self.verbosity)
+                self.stop_fetched.emit(result._replace(arrows=known))
+
+                # second pass: look up the routes we have not seen yet, then repaint with them
                 arrows, used = resolve_direction_arrows(
                     self.client, result.stop_id, result.stop_coords, result.departures,
                     self.direction_budget, self.direction_recompute_interval, self.verbosity)
                 self.direction_budget -= used
-                result = result._replace(arrows=arrows)
 
-            self.stop_fetched.emit(result)
+                if used:
+                    self.stop_fetched.emit(result._replace(arrows=arrows))
+            else:
+                self.stop_fetched.emit(result)
 
         self.all_finished.emit()
 
@@ -893,6 +957,7 @@ class DVB_Monitor(QMainWindow):
         self.validate_config()                   # check everything is sane
 
         self.setup_dvb_client()
+        self.setup_backlight()   # without this GPIO 18 is never set up as an output
         self.initUI()
 
     def showEvent(self, event):
@@ -904,6 +969,34 @@ class DVB_Monitor(QMainWindow):
         print(f"Window geometry: {geo.x()}, {geo.y()}, {geo.width()}x{geo.height()}")
         print(f"Frame geometry:  {frame.x()}, {frame.y()}, {frame.width()}x{frame.height()}")
         print(f"Screen size:     {screen.width()}x{screen.height()}")
+    
+    def setup_backlight(self):
+        if self.use_backlight_control:
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(BACKLIGHT_PIN, GPIO.OUT, initial=GPIO.HIGH)
+
+    def _shutdown_hardware(self):
+        """
+        stop reading touches and hand the backlight back, once.
+
+        this is hooked to both closeEvent and aboutToQuit: the escape shortcut calls
+        QApplication.quit, which never reaches closeEvent, so closeEvent alone left the screen
+        in whatever state it was in.
+        """
+        if getattr(self, '_hardware_released', False):
+            return
+        self._hardware_released = True
+
+        reader = getattr(self, 'touch_reader', None)
+        if reader is not None:
+            reader.stop()
+
+        if self.use_backlight_control:
+            try:
+                GPIO.output(BACKLIGHT_PIN, GPIO.HIGH)   # leave the screen on when we exit
+                GPIO.cleanup()
+            except Exception as e:
+                print(f'⚠️ could not release the backlight pin: {e}')
 
     def setup_internal_state(self):
 
@@ -1127,16 +1220,13 @@ class DVB_Monitor(QMainWindow):
 
         self.is_full_screen = config["is_full_screen"]
         self.is_touch = config["is_touch"]
-        self.touch_rotation = config["touch_rotation"]
+        self.touch_device = config["touch_device"]
 
-        self.is_touch_calibrated = config["is_touch_calibrated"]
         self.touch_raw_x_min     = config["touch_raw_x_min"]
         self.touch_raw_x_max     = config["touch_raw_x_max"]
         self.touch_raw_y_min     = config["touch_raw_y_min"]
         self.touch_raw_y_max     = config["touch_raw_y_max"]
 
-        self.backlight_path        = config["backlight_path"]
-        self.backlight_max         = config["backlight_max"]
         self.use_backlight_control = config["use_backlight_control"]
 
         self.css_file = config["css_file"]
@@ -1253,10 +1343,10 @@ class DVB_Monitor(QMainWindow):
         if not os.path.exists(self.css_file):
             errors.append(f"css_file '{self.css_file}' not found")
 
-        if self.use_backlight_control:
-            if not os.path.exists(self.backlight_path):
-                errors.append(f"backlight_path '{self.backlight_path}' not found. "
-                              f"Run: ls /sys/class/backlight/ to find correct path")
+        if self.is_touch and not os.path.exists(self.touch_device):
+            errors.append(f"touch_device '{self.touch_device}' not found. "
+                          f"Run: ls /dev/input/ to find the touchscreen")
+
 
         # report errors and exit if any
         if errors:
@@ -1361,27 +1451,23 @@ class DVB_Monitor(QMainWindow):
 
 
     def setup_touch(self):
-        self.touch_filter = TouchFilter(
-            self.app,
-            self.touch_rotation,
-            self.width,
-            self.height,
-            is_calibrated = self.is_touch_calibrated,
+        # touches arrive in global screen coordinates, so map them onto the real screen rather
+        # than onto the window, which is only the same thing when it is full screen
+        screen = self.app.primaryScreen()
+        screen_w = screen.size().width()  if screen else self.width
+        screen_h = screen.size().height() if screen else self.height
+
+        self.touch_reader = TouchReader(
+            app           = self.app,
+            device        = self.touch_device,
+            screen_w      = screen_w,
+            screen_h      = screen_h,
             x_min         = self.touch_raw_x_min,
             x_max         = self.touch_raw_x_max,
             y_min         = self.touch_raw_y_min,
             y_max         = self.touch_raw_y_max,
+            wake_callback = self.wake_if_sleeping,
         )
-
-        self.touch_filter.wake_callback = self.wake_if_sleeping
-        
-        self.installEventFilter(self.touch_filter)
-        self._install_filter_on_children()
-
-    def _install_filter_on_children(self):
-        # Install on every child widget recursively
-        for widget in self.findChildren(QWidget):
-            widget.installEventFilter(self.touch_filter)
 
     def init_tables(self):
         self.tables_layout = QHBoxLayout()
@@ -1574,6 +1660,7 @@ class DVB_Monitor(QMainWindow):
         # the escape shortcut calls QApplication.quit directly, which does NOT go through
         # closeEvent.  without this, quitting mid-fetch aborts on a still-running QThread.
         self.app.aboutToQuit.connect(self._stop_fetcher)
+        self.app.aboutToQuit.connect(self._shutdown_hardware)
     
 
 
@@ -1874,6 +1961,7 @@ class DVB_Monitor(QMainWindow):
 
     def closeEvent(self, event):
         self._stop_fetcher()
+        self._shutdown_hardware()
         super().closeEvent(event)
 
     def _last_error_summary(self):
@@ -2023,29 +2111,17 @@ class DVB_Monitor(QMainWindow):
 
     def backlight_on(self):
         if self.use_backlight_control:
-            try:
-                with open(self.backlight_path, 'w') as f:
-                    f.write(str(self.backlight_max))
-                self.is_backlight_off = False
-            except Exception as e:
-                print(f"⚠️ could not turn backlight on: {e}")
+            GPIO.output(BACKLIGHT_PIN, GPIO.HIGH)
+            self.is_backlight_off = False
 
     def backlight_off(self):
-
-        if self.refresh_forever:
-                return
-
         if self.use_backlight_control:
-            try:
-                with open(self.backlight_path, 'w') as f:
-                    f.write('0')
-                self.is_backlight_off = True
-            except Exception as e:
-                print(f"⚠️ could not turn backlight off: {e}")
+            GPIO.output(BACKLIGHT_PIN, GPIO.LOW)
+            self.is_backlight_off = True
 
     def wake_if_sleeping(self):
         """
-        Called by TouchFilter on every touch.
+        Called by TouchReader at the start of every touch.
         Returns True if screen was off (touch should be blocked).
         Returns False if screen was on (touch should be processed normally).
         """
@@ -2186,4 +2262,3 @@ if __name__ == '__main__':
         sys.exit(2)
 
     sys.exit(app.exec_())
-    
