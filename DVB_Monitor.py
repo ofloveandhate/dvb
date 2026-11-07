@@ -65,6 +65,15 @@ DEFAULT_CONFIG = {
     "verbosity": 0,
     "refresh_forever": False,
 
+    # where the text sits vertically in each cell of the departure table: top, center or bottom.
+    # a column can override it with its own "vertical_alignment".
+    "cell_vertical_alignment": "bottom",
+
+    # what the line along the bottom says.  false: when the departures were last updated, to the
+    # second.  true: the current time, to the minute, kept up to date by itself.  problems (cannot
+    # reach DVB, stops failing, stale data cleared) are still reported there either way.
+    "footer_shows_clock": False,
+
     # widths are in pixels, and have to fit the window: with num_departures_to_monitor=12 and
     # num_rows_per_table=6 these are laid out as two groups side by side, so the budget is
     # (window_width - column_group_spacing) / 2 = (480 - 20) / 2 = 230 per group.  these come to
@@ -405,9 +414,17 @@ GETTER_REGISTRY = {
 }
 
 ALIGNMENT_REGISTRY = {
-    "left"   : Qt.AlignLeft    | Qt.AlignBottom,
-    "right"  : Qt.AlignRight   | Qt.AlignBottom,
-    "center" : Qt.AlignHCenter | Qt.AlignBottom,
+    "left"   : Qt.AlignLeft,
+    "right"  : Qt.AlignRight,
+    "center" : Qt.AlignHCenter,
+}
+
+# vertical placement of text within a cell.  Qt stylesheets have no vertical-align, so this
+# is a config key (cell_vertical_alignment, and optionally vertical_alignment per column).
+VERTICAL_ALIGNMENT_REGISTRY = {
+    "top"    : Qt.AlignTop,
+    "center" : Qt.AlignVCenter,
+    "bottom" : Qt.AlignBottom,
 }
 
 
@@ -1040,6 +1057,10 @@ class DVB_Monitor(QMainWindow):
         self.fetcher                  = None # the background QThread, when one is in flight
         self.was_last_refresh_automatic = True
 
+        # true only while the footer is showing the clock, so the minute tick knows it may
+        # overwrite it.  an error or "stale data cleared" message sets this false and is left alone.
+        self._footer_showing_clock = False
+
         self.is_backlight_off = False
 
         #############
@@ -1209,11 +1230,16 @@ class DVB_Monitor(QMainWindow):
                 raise RuntimeError(f"Unknown alignment '{alignment_name}' in config.yaml. "
                                    f"Valid options: {list(ALIGNMENT_REGISTRY.keys())}")
 
+            v_name = col.get("vertical_alignment", config["cell_vertical_alignment"])
+            if v_name not in VERTICAL_ALIGNMENT_REGISTRY:
+                raise RuntimeError(f"Unknown vertical alignment '{v_name}' in config.yaml. "
+                                   f"Valid options: {list(VERTICAL_ALIGNMENT_REGISTRY.keys())}")
+
             self.columns.append(Column(
                 header      = col["header"],
                 width       = self.scaled_px(col["width"]),
                 getter      = GETTER_REGISTRY[getter_name],
-                alignment   = ALIGNMENT_REGISTRY[alignment_name],
+                alignment   = ALIGNMENT_REGISTRY[alignment_name] | VERTICAL_ALIGNMENT_REGISTRY[v_name],
                 margin_right= self.scaled_px(col.get("margin_right", 0)),
                 elide       = col.get("elide", False),  # default to False
             ))
@@ -1229,6 +1255,7 @@ class DVB_Monitor(QMainWindow):
         self.num_departures_to_monitor = config["num_departures_to_monitor"]
 
         self.show_infinite_arrivals = bool(config["show_infinite_arrivals"])
+        self.footer_shows_clock     = bool(config["footer_shows_clock"])
 
         self.direction_recompute_interval  = max(0, int(config["direction_recompute_interval"]))
         self.direction_lookups_per_refresh = max(0, int(config["direction_lookups_per_refresh"]))
@@ -1677,6 +1704,16 @@ class DVB_Monitor(QMainWindow):
         self.timer_fetch_watchdog.setSingleShot(True)
         self.timer_fetch_watchdog.timeout.connect(self._on_fetch_watchdog)
 
+        # the footer clock, when footer_shows_clock is on.  it works out the time to the next
+        # minute boundary each time it is armed, so it cannot drift, and it is a precise timer
+        # because Qt's default coarse one may fire seconds early on an interval this long.
+        self.timer_clock = QTimer(self)
+        self.timer_clock.setSingleShot(True)
+        self.timer_clock.setTimerType(Qt.PreciseTimer)
+        self.timer_clock.timeout.connect(self._tick_clock)
+        if self.footer_shows_clock:
+            self._arm_clock_timer()
+
         # the escape shortcut calls QApplication.quit directly, which does NOT go through
         # closeEvent.  without this, quitting mid-fetch aborts on a still-running QThread.
         self.app.aboutToQuit.connect(self._stop_fetcher)
@@ -1697,6 +1734,7 @@ class DVB_Monitor(QMainWindow):
             t.clear()  # StopDisplay already has this method!
 
         self.backlight_off()
+        self._footer_showing_clock = False
         self.time_updated_widget.setText(f'Stale data cleared. Refresh to start again.')
 
         if self.retry_when_stale:
@@ -1884,7 +1922,13 @@ class DVB_Monitor(QMainWindow):
         self._schedule_next_auto_refresh()
 
     def _refresh_time(self):
-        """the footer: when we last had good data, and what is currently broken."""
+        """
+        the footer: when we last had good data (or, with footer_shows_clock, the time now),
+        and what is currently broken.
+        """
+        # whatever goes up next is a message unless the happy path below says it is the clock
+        self._footer_showing_clock = False
+
         more_text = ''
         if self.mock_update:
             more_text = "`mock_update` is set to true. "
@@ -1908,9 +1952,31 @@ class DVB_Monitor(QMainWindow):
         if num_failed:
             self.time_updated_widget.setText(
                 f'{more_text}⚠️ {num_failed}/{num_total} stops failed · last ok {timestamp}')
+        elif self.footer_shows_clock:
+            self.time_updated_widget.setText(self._clock_text())
+            self._footer_showing_clock = True
         else:
             # unchanged from before, so the happy path looks exactly as it always has
             self.time_updated_widget.setText(f'{more_text}{timestamp}')
+
+    def _clock_text(self):
+        """the current time to the minute, for the footer."""
+        prefix = "`mock_update` is set to true. " if self.mock_update else ''
+        return f'{prefix}{datetime.now().strftime("%H:%M")}'
+
+    def _arm_clock_timer(self):
+        """fire just after the next minute boundary, a few ms past it so we never read 59 s."""
+        now = datetime.now()
+        into_minute_ms = now.second * 1000 + now.microsecond // 1000
+        self.timer_clock.start(60000 - into_minute_ms + 20)
+
+    def _tick_clock(self):
+        # only while the footer is showing the clock: an error or "stale data cleared" message
+        # sitting there is something to read, not something to replace with the time
+        if self._footer_showing_clock:
+            self.time_updated_widget.setText(self._clock_text())
+
+        self._arm_clock_timer()
 
     def _start_background_refresh(self):
         """kick off a fetch on the worker thread.  returns immediately."""
@@ -1966,6 +2032,7 @@ class DVB_Monitor(QMainWindow):
         self.timer_refresh.stop()
         self.timer_stale_data.stop()
         self.timer_fetch_watchdog.stop()
+        self.timer_clock.stop()
 
         if self.fetcher is not None and self.fetcher.isRunning():
             self.fetcher.requestInterruption()
