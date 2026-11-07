@@ -981,8 +981,25 @@ class DVB_Monitor(QMainWindow):
         self.setup_backlight()   # without this GPIO 18 is never set up as an output
         self.initUI()
 
+    def _show_window(self):
+        """the one place the window is shown, so fullscreen can never be lost by a plain show()."""
+        if self.is_full_screen:
+            if not self.isFullScreen():
+                self.showFullScreen()
+        else:
+            self.show()
+
     def showEvent(self, event):
         super().showEvent(event)
+
+        # setGeometry() before show() is only a request, and a desktop window manager is free to
+        # place the window wherever it likes (it often does when the size changes).  ask again
+        # once the window is actually up; X11 honours this.  wayland compositors do not let
+        # apps position themselves at all, whatever we ask.
+        if not self.is_full_screen and not getattr(self, '_placed_once', False):
+            self._placed_once = True
+            QTimer.singleShot(0, lambda: self.move(self.left, self.top))
+
         # This runs after window is fully shown
         geo = self.geometry()
         frame = self.frameGeometry()
@@ -1417,7 +1434,9 @@ class DVB_Monitor(QMainWindow):
 
 
         if self.is_full_screen:
-            self.showFullScreen()
+            # flags must be set BEFORE the window is shown: changing them on a visible window
+            # hides it and throws away its fullscreen state, and the next plain show() then
+            # brings back an ordinary window that the window manager places by content size.
             self.setWindowFlags(Qt.FramelessWindowHint)
 
         # Create central widget and layout
@@ -1458,8 +1477,7 @@ class DVB_Monitor(QMainWindow):
         # show the window BEFORE the first fetch.  previously the only self.show() was the one at
         # the end of rebuild(), so a failed first fetch meant no window ever appeared at all.
         self.time_updated_widget.setText('starting up…')
-        if not self.is_full_screen:
-            self.show()
+        self._show_window()
         self.app.processEvents()   # paint the empty grid now, rather than after the first fetch
 
         self._warn_if_window_too_small()
@@ -2083,7 +2101,7 @@ class DVB_Monitor(QMainWindow):
         self._rebuild_stops()
         self._rebuild_nav()
         self.update()
-        self.show()#FullScreen()
+        self._show_window()
     
     def _rebuild_stops(self):
 
